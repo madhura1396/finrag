@@ -1,3 +1,13 @@
+# finrag
+
+A personal financial RAG (Retrieval-Augmented Generation) system that parses Wells Fargo credit card statements and answers natural language questions about spending.
+
+Upload a PDF statement → transactions are extracted, cleaned, and stored in PostgreSQL → ask questions like "how much did I spend on groceries last month" or "show me travel expenses" → the system routes to SQL for exact calculations or vector search for exploratory queries → LLM formats the answer using real numbers from the database.
+
+Built to run entirely locally — no data leaves the machine. Uses Ollama (llama3.2) for LLM calls and all-MiniLM-L6-v2 for embeddings.
+
+---
+
 # Design Decisions
 
 Every non-obvious choice made in this codebase — what we built, why we built it that way, and what we considered but rejected.
