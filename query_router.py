@@ -74,7 +74,16 @@ Question: {question}"""
 
     response = httpx.post(
         "http://localhost:11434/api/generate",
-        json={"model": "llama3.2", "prompt": prompt, "stream": False},
+        json={
+            "model":       "llama3.2",
+            "prompt":      prompt,
+            "stream":      False,
+            "options": {
+                "temperature": 0.1,
+                "top_k":       10,
+                "top_p":       0.5,
+            },
+        },
         timeout=60,
     )
     response.raise_for_status()
@@ -95,13 +104,17 @@ def _validate_sql(sql: str) -> bool:
     return True
 
 
+SIMILARITY_THRESHOLD = 0.4
+
+
 def _semantic_search(question: str, db) -> list:
     from embedder import generate_embedding
-    from pgvector.sqlalchemy import Vector
 
     query_vector = generate_embedding(question)
 
-    results = db.query(Transaction).order_by(
+    results = db.query(Transaction).filter(
+        Transaction.embedding.cosine_distance(query_vector) < SIMILARITY_THRESHOLD
+    ).order_by(
         Transaction.embedding.cosine_distance(query_vector)
     ).limit(10).all()
 
