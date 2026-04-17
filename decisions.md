@@ -65,6 +65,9 @@ The LLM only needs to identify section headers and page ranges — information t
 ### Why fallback defaults in `detect_structure()`
 If Ollama is down, times out, or returns malformed JSON, the system should degrade gracefully rather than crash. Fallback values match the standard Wells Fargo format. The trade-off is that it scans all pages instead of only the transaction pages.
 
+### Why the parser uses field-collection across multiple lines instead of a single-line regex
+The Wells Fargo PDF does not put each transaction on one line. fitz extracts each field as a separate line: card number, trans date, post date, reference number, description, and amount are all individual lines. The original single-line regex matched nothing. The new parser collects fields across lines using pattern matching — date pattern, then text, then amount pattern triggers saving the transaction.
+
 ### Why a state machine for `parse_transactions_from_text()`
 PDF text extraction returns a flat list of lines with no structure. The state machine tracks: are we inside the transaction section yet, which section are we in (credits or purchases), is this line a new transaction or a continuation of the previous one. Each line means something different depending on what came before it — that is the definition of state.
 
@@ -115,6 +118,9 @@ Normalization makes every vector unit length (magnitude = 1). When vectors are u
 ### Why `vector.tolist()`
 The model returns a numpy array. pgvector accepts either numpy arrays or Python lists. We convert to list to avoid numpy as an import dependency in pipeline.py and to make the value JSON-serializable if needed.
 
+### Why embed only the category and not merchant, date, or amount
+Date and amount add no semantic signal — two Trader Joe's charges of different amounts should be equally similar to "grocery shopping". The merchant name adds some signal but also noise (store numbers, city names, phone numbers). The category is the cleanest semantic label. Two transactions in the same category will have identical embeddings — this is intentional for category-level semantic search.
+
 ---
 
 ## pipeline.py
@@ -128,6 +134,9 @@ The original design ran LLM enrichment inside the upload transaction. If Ollama 
 ### Why `db.rollback()` in the except block
 If anything fails during extraction — PDF parse error, duplicate statement, DB error — we want to undo all partial inserts from this request. Without rollback, a partial upload leaves orphaned rows in the database.
 
+### Why split `extract_from_pdf()` and `enrich_transactions()` into two functions
+Originally enrichment ran inside the upload transaction. If Ollama timed out mid-batch, the database rolled back and all extracted transactions were lost. Splitting means raw transactions are committed first — enrichment is a separate step that can fail, be retried, or run as a background job without losing the ground truth data.
+
 ### Why set `merchant = raw_description` initially
 At the time of DB insert, LLM has not run yet. The `merchant` column is non-nullable so we need a value. Setting it to `raw_description` means the row is always readable even before enrichment runs.
 
@@ -137,6 +146,9 @@ At the time of DB insert, LLM has not run yet. The `merchant` column is non-null
 
 ### Why LLM-generated SQL instead of hardcoded query functions
 Hardcoded functions cannot handle the full range of natural language questions. "Where did I spend most last month", "compare dining vs groceries in Q4", "which merchant charged me the most" all require different SQL. An LLM that knows the schema can generate the right query for any of these.
+
+### Why LLM-generated SQL with recursive batch splitting for enrichment
+The original single batch call sent all 35+ transactions to llama3.2 at once. The model hit its context limit and returned an empty string, crashing `json.loads`. The fix splits transactions into chunks of 15. If a chunk has missed IDs, it splits again into halves recursively — 15 → 7 → 3 → 1 — until every transaction is resolved or marked `needs_review`. Each smaller prompt is far less likely to overwhelm the model.
 
 ### Why always validate SQL before executing
 LLMs can generate syntactically valid but destructive SQL. `DROP TABLE transactions` is valid SQL. `_validate_sql()` ensures only SELECT queries reach the database. Never execute LLM-generated SQL without validation.

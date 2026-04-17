@@ -11,9 +11,7 @@ def _get_model() -> SentenceTransformer:
 
 
 def build_embedded_text(tx) -> str:
-    kind   = "received" if tx.is_credit == "true" else "spent"
-    date   = tx.trans_date.strftime("%m/%d")
-    return f"On {date}, {kind} ${tx.amount} at {tx.merchant} in {tx.category}"
+    return tx.category
 
 
 def generate_embedding(text: str) -> list:

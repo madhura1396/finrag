@@ -1,7 +1,5 @@
 import json
 import re
-from typing import Optional
-
 import httpx
 
 
@@ -12,18 +10,14 @@ CATEGORIES = [
     "Shopping",
     "Telephone & Internet",
     "Entertainment",
-    "Insurance",
-    "Utilities"
     "Health & Fitness",
     "Other",
 ]
 
+BATCH_SIZE = 15
 
-def call_llm_batch(transactions: list[dict]) -> list[dict]:
-    payload = []
-    for t in transactions:
-        payload.append({"id": t["id"], "raw": t["raw_description"]})
 
+def _call_llm_single_batch(payload: list) -> tuple:
     prompt = f"""You are a financial data assistant. Clean merchant names and assign categories.
 
 For each transaction return ONLY a JSON array with this exact structure:
@@ -55,40 +49,50 @@ Transactions:
     if "```" in llm_text:
         llm_text = re.sub(r"```(?:json)?", "", llm_text).strip()
 
-    results = json.loads(llm_text)
+    if not llm_text:
+        return [], {p["id"] for p in payload}
 
-    returned_ids = {r["id"] for r in results}
-    all_ids      = {t["id"] for t in transactions}
-    missed_ids   = all_ids - returned_ids
-
+    results    = json.loads(llm_text)
+    batch_ids  = {p["id"] for p in payload}
+    returned   = {r["id"] for r in results}
+    missed_ids = batch_ids - returned
     return results, missed_ids
 
 
-def call_llm_single(transaction: dict) -> Optional[dict]:
-    prompt = f"""Clean this bank transaction and assign a category.
-
-Return ONLY a JSON object:
-{{"merchant": "<cleaned name>", "category": "<category>"}}
-
-Categories:
-{json.dumps(CATEGORIES, indent=2)}
-
-Transaction: {transaction["raw_description"]}
-"""
+def _process_with_splitting(payload: list, all_results: list, all_missed: set):
+    if not payload:
+        return
 
     try:
-        response = httpx.post(
-            "http://localhost:11434/api/generate",
-            json={"model": "llama3.2", "prompt": prompt, "stream": False},
-            timeout=60,
-        )
-        response.raise_for_status()
+        results, missed_ids = _call_llm_single_batch(payload)
+        all_results.extend(results)
 
-        llm_text = response.json()["response"].strip()
-        if "```" in llm_text:
-            llm_text = re.sub(r"```(?:json)?", "", llm_text).strip()
-
-        return json.loads(llm_text)
+        if missed_ids and len(payload) > 1:
+            missed_payload = [p for p in payload if p["id"] in missed_ids]
+            mid = len(missed_payload) // 2
+            _process_with_splitting(missed_payload[:mid], all_results, all_missed)
+            _process_with_splitting(missed_payload[mid:], all_results, all_missed)
+        else:
+            all_missed.update(missed_ids)
 
     except (httpx.HTTPError, json.JSONDecodeError, KeyError):
-        return None
+        if len(payload) > 1:
+            mid = len(payload) // 2
+            _process_with_splitting(payload[:mid], all_results, all_missed)
+            _process_with_splitting(payload[mid:], all_results, all_missed)
+        else:
+            all_missed.add(payload[0]["id"])
+
+
+def call_llm_batch(transactions: list) -> tuple:
+    all_results = []
+    all_missed  = set()
+
+    for i in range(0, len(transactions), BATCH_SIZE):
+        batch = transactions[i : i + BATCH_SIZE]
+        payload = [{"id": t["id"], "raw": t["raw_description"]} for t in batch]
+        _process_with_splitting(payload, all_results, all_missed)
+
+    return all_results, all_missed
+
+

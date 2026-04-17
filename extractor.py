@@ -3,6 +3,7 @@ import json
 from datetime import date, datetime
 from pathlib import Path
 from decimal import Decimal, InvalidOperation
+from typing import Optional
 
 import fitz
 import httpx
@@ -51,24 +52,13 @@ def parse_statement_period(pages: list[dict]) -> tuple[date, date]:
     return period_start, period_end
 
 
-TRANSACTION_PATTERN = re.compile(r"""
-    ^\s*
-    \d{4}
-    \s+
-    (\d{1,2}/\d{1,2})
-    \s+
-    \d{1,2}/\d{1,2}
-    \s+
-    [A-Z0-9]+
-    \s+
-    (.+?)
-    \s+
-    ([\d,]+\.\d{2})
-    \s*$
-""", re.VERBOSE)
+DATE_PATTERN   = re.compile(r"^\d{1,2}/\d{1,2}$")
+AMOUNT_PATTERN = re.compile(r"^[\d,]+\.\d{2}$")
+CARD_PATTERN   = re.compile(r"^\d{4}$")
+REF_PATTERN    = re.compile(r"^[A-Z0-9]{15,}$")
 
 
-def _parse_date(raw_date: str, period_start: date, period_end: date) -> date | None:
+def _parse_date(raw_date: str, period_start: date, period_end: date) -> Optional[date]:
     try:
         month, day = [int(x) for x in raw_date.split("/")]
         candidate = date(period_start.year, month, day)
@@ -84,6 +74,17 @@ def _parse_amount(raw_amount: str) -> Decimal:
         return Decimal(raw_amount.replace(",", ""))
     except InvalidOperation:
         return Decimal("0.00")
+
+
+def _is_noise(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if CARD_PATTERN.match(stripped):
+        return True
+    if REF_PATTERN.match(stripped):
+        return True
+    return False
 
 
 def parse_transactions_from_text(
@@ -114,8 +115,10 @@ def parse_transactions_from_text(
 
     transactions    = []
     current_section = None
-    current_tx      = None
     in_transactions = False
+
+    pending_date   = None
+    pending_desc   = None
 
     for line in all_lines:
         stripped = line.strip()
@@ -127,53 +130,46 @@ def parse_transactions_from_text(
             continue
 
         if end_marker in lower:
-            if current_tx:
-                transactions.append(current_tx)
-                current_tx = None
             break
 
         if any(m in lower for m in credit_markers):
-            if current_tx:
-                transactions.append(current_tx)
-                current_tx = None
             current_section = "credits"
             continue
 
         if any(m in lower for m in purchase_markers):
-            if current_tx:
-                transactions.append(current_tx)
-                current_tx = None
             current_section = "purchases"
             continue
 
         if "total" in lower and "for this period" in lower:
-            if current_tx:
-                transactions.append(current_tx)
-                current_tx = None
+            pending_date = None
+            pending_desc = None
             continue
 
-        if not stripped:
+        if _is_noise(stripped):
             continue
 
-        match = TRANSACTION_PATTERN.match(line)
+        if DATE_PATTERN.match(stripped):
+            if pending_date is None:
+                pending_date = stripped
+            continue
 
-        if match:
-            if current_tx:
-                transactions.append(current_tx)
+        if AMOUNT_PATTERN.match(stripped):
+            if pending_date and pending_desc:
+                transactions.append({
+                    "trans_date":      _parse_date(pending_date, period_start, period_end),
+                    "raw_description": pending_desc,
+                    "amount":          _parse_amount(stripped),
+                    "is_credit":       current_section == "credits",
+                })
+            pending_date = None
+            pending_desc = None
+            continue
 
-            current_tx = {
-                "trans_date":      _parse_date(match.group(1), period_start, period_end),
-                "raw_description": match.group(2).strip(),
-                "amount":          _parse_amount(match.group(3)),
-                "is_credit":       current_section == "credits",
-            }
-
-        elif current_tx and stripped:
-            if not stripped.startswith("Card") and len(stripped) > 3:
-                current_tx["raw_description"] += " " + stripped
-
-    if current_tx:
-        transactions.append(current_tx)
+        if pending_date:
+            if pending_desc is None:
+                pending_desc = stripped
+            else:
+                pending_desc += " " + stripped
 
     return transactions
 

@@ -4,7 +4,7 @@ from extractor import (
     detect_structure,
     parse_transactions_from_text,
 )
-from llm import call_llm_batch, call_llm_single
+from llm import call_llm_batch
 from embedder import build_embedded_text, generate_embedding
 from models import SessionLocal, Statement, Transaction
 
@@ -86,13 +86,8 @@ def enrich_transactions(statement_id: int) -> dict:
                 tx.category = result_map[tx.id]["category"]
 
         for tid in missed_ids:
-            tx     = next(t for t in db_transactions if t.id == tid)
-            result = call_llm_single({"id": tx.id, "raw_description": tx.raw_description})
-            if result:
-                tx.merchant = result["merchant"]
-                tx.category = result["category"]
-            else:
-                tx.needs_review = True
+            tx = next(t for t in db_transactions if t.id == tid)
+            tx.needs_review = True
 
         for tx in db_transactions:
             tx.embedded_text = build_embedded_text(tx)

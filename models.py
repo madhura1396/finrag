@@ -2,7 +2,7 @@ import os
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Numeric, Boolean, ForeignKey, UniqueConstraint, create_engine
+from sqlalchemy import Column, Integer, String, Text, DateTime, Date, Numeric, Boolean, ForeignKey, UniqueConstraint, create_engine, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 from pgvector.sqlalchemy import Vector
 
@@ -100,7 +100,7 @@ class Trip(Base):
 def create_tables():
     # Load pgvector extension first — must exist before Vector(384) columns are created
     with engine.connect() as conn:
-        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
 
     # Create all tables defined above if they don't already exist

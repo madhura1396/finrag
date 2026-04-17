@@ -2,7 +2,7 @@
 Manual test script for llm.py
 Run with: python test_llm.py
 """
-from llm import call_llm_batch, call_llm_single
+from llm import call_llm_batch
 
 
 def separator(title: str):
@@ -40,30 +40,13 @@ def test_call_llm_batch():
     return missed_ids
 
 
-def test_call_llm_single(missed_ids: set):
-    separator("TEST 2: call_llm_single() for missed transactions")
-
-    if not missed_ids:
-        print("No missed transactions to retry — skipping")
-        return
-
-    for tid in missed_ids:
-        tx = next(t for t in fake_transactions if t["id"] == tid)
-        print(f"\nRetrying id={tid}: {tx['raw_description']!r}")
-        result = call_llm_single(tx)
-
-        if result:
-            print(f"  merchant={result['merchant']!r}  category={result['category']!r}")
-        else:
-            print(f"  ✗ Failed again — would set needs_review=True in DB")
 
     print("\n✓ PASSED")
 
 
 if __name__ == "__main__":
     try:
-        missed_ids = test_call_llm_batch()
-        test_call_llm_single(missed_ids)
+        test_call_llm_batch()
         separator("ALL TESTS PASSED")
     except Exception as e:
         print(f"\n✗ ERROR: {type(e).__name__}: {e}")
