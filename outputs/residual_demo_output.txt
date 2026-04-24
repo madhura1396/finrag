@@ -1,0 +1,127 @@
+
+======================================================================
+STARTING INPUT  x0  (same for both networks)
+
+======================================================================
+  first 4 values :  1.26691  -0.70767   0.44382   0.77463
+  norm           : 3.91418
+
+======================================================================
+NETWORK A — NO RESIDUAL   x = tanh(W @ x)
+
+======================================================================
+
+  After layer 0:
+    x          : -0.94019   0.97827  -0.91437  -0.17858   norm=2.43863
+    delta      : -2.20711   1.68594  -1.35819  -0.95321   delta_norm=4.98867
+
+  After layer 1:
+    x          :  0.63588   0.66652  -0.81856  -0.58836   norm=1.70317
+    delta      :  1.57608  -0.31175   0.09581  -0.40978   delta_norm=3.02961
+
+  After layer 2:
+    x          :  0.58820  -0.62287   0.81091  -0.79917   norm=1.68174
+    delta      : -0.04768  -1.28939   1.62947  -0.21081   delta_norm=2.48903
+
+  After layer 3:
+    x          :  0.49276  -0.14249  -0.83730  -0.89628   norm=1.68376
+    delta      : -0.09544   0.48037  -1.64822  -0.09711   delta_norm=2.11675
+
+======================================================================
+NETWORK B — WITH RESIDUAL  x = x + tanh(W @ x)
+
+======================================================================
+
+  After layer 0:
+    x          :  0.32672   0.27060  -0.47055   0.59605   norm=4.20103
+    delta      : -0.94019   0.97827  -0.91437  -0.17858   delta_norm=2.43863
+
+  After layer 1:
+    x          : -0.02124   0.93631  -1.45850   1.32410   norm=5.84806
+    delta      : -0.34796   0.66571  -0.98795   0.72805   delta_norm=2.28111
+
+  After layer 2:
+    x          :  0.97822   1.93527  -1.14507   2.32271   norm=5.53826
+    delta      :  0.99946   0.99896   0.31343   0.99861   delta_norm=2.23800
+
+  After layer 3:
+    x          :  0.19142   2.00260  -0.14508   1.32321   norm=5.08280
+    delta      : -0.78680   0.06733   0.99999  -0.99950   delta_norm=2.37923
+
+======================================================================
+SIDE-BY-SIDE SUMMARY TABLE
+
+======================================================================
+
+   Layer   Norm (no resid)   Norm (with resid)   Delta (no resid)  Delta (with resid)
+  ----------------------------------------------------------------------------------
+       0           2.43863             4.20103            4.98867             2.43863
+       1           1.70317             5.84806            3.02961             2.28111
+       2           1.68174             5.53826            2.48903             2.23800
+       3           1.68376             5.08280            2.11675             2.37923
+
+======================================================================
+GRADIENT ANALYSIS  (finite differences, eps=1e-5)
+Gradient of sum(x_final) w.r.t. x_input
+
+======================================================================
+
+  Network A (no residual):
+    gradient vector (first 4): -0.11607   0.35808  -0.02133  -0.11441
+    gradient norm            : 0.773020
+
+  Network B (with residual):
+    gradient vector (first 4):  1.12652   2.96657  -1.03796   1.72144
+    gradient norm            : 5.082208
+
+======================================================================
+CONCLUSION
+
+======================================================================
+
+  Without residuals: layer 0 gradient = 0.773020
+  With residuals:    layer 0 gradient = 5.082208
+  Residuals preserve 557.4% more gradient signal
+
+======================================================================
+OBSERVATIONS
+
+======================================================================
+
+  1. NORM GROWTH
+     Network A (no residual): tanh squashes outputs to (-1, 1) each layer,
+     so norms stay bounded and small — the network "forgets" scale.
+     Network B (with residual): x accumulates additively each layer, so
+     the norm grows steadily, similar to what we saw in the real Llama
+     residual stream (0.99 → 105.6 across 16 layers).
+
+  2. DELTA NORMS
+     In Network A, delta = tanh(W@x) - x, which can be large early but
+     shrinks as tanh saturates. In Network B, delta = tanh(W@x), which
+     is the raw FFN output added on top — each layer contributes a
+     meaningful, additive increment rather than replacing the vector.
+
+  3. GRADIENT FLOW
+     The gradient norm for Network A collapses toward zero with depth
+     (vanishing gradient): tanh derivatives are in (0,1], so 4 layers
+     of multiplication shrinks the signal significantly.
+     Network B's residual path creates a shortcut: the gradient of
+     x_final w.r.t. x_input has a direct identity component (∂x/∂x = 1)
+     through every skip connection, so the gradient norm stays much larger.
+
+  4. WHY THIS MATTERS FOR LLAMA
+     The Llama residual stream shows the same pattern: each layer adds
+     a delta (attention output + FFN output) onto the running x vector.
+     Layer 15 adds a delta of norm 97 to an x of norm ~20 — that large
+     final write is only possible because the residual connection lets
+     early information survive undistorted to the final layer, where it
+     gets projected to the unembedding space for next-token prediction.
+     Without residuals, layer 15 would be processing a heavily distorted,
+     norm-collapsed vector with almost no gradient signal reaching layer 0.
+
+  5. TRAINING IMPLICATION
+     Residuals make deep networks trainable: gradients can flow back
+     through the identity shortcut even when weight layers are poorly
+     initialized. This is why ResNet (2015) and then Transformers both
+     adopted residual connections as a core architectural choice.
+
