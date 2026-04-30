@@ -44,7 +44,7 @@ Reply with a single word: sql or semantic"""
     try:
         response = httpx.post(
             "http://localhost:11434/api/generate",
-            json={"model": "llama3.2", "prompt": prompt, "stream": False},
+            json={"model": "llama3.2", "prompt": prompt, "stream": False, "options": {"temperature": 0.1, "num_predict": 1}},
             timeout=30,
         )
         response.raise_for_status()
