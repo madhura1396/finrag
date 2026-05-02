@@ -105,6 +105,7 @@ def _validate_sql(sql: str) -> bool:
 
 
 SIMILARITY_THRESHOLD = 0.4
+MAX_CHUNKS = 5
 
 
 def _semantic_search(question: str, db) -> list:
@@ -112,24 +113,30 @@ def _semantic_search(question: str, db) -> list:
 
     query_vector = generate_embedding(question)
 
-    results = db.query(Transaction).filter(
-        Transaction.embedding.cosine_distance(query_vector) < SIMILARITY_THRESHOLD
-    ).order_by(
-        Transaction.embedding.cosine_distance(query_vector)
-    ).limit(10).all()
+    # Fetch scored so we can rerank before returning
+    rows = (
+        db.query(Transaction, Transaction.embedding.cosine_distance(query_vector).label("score"))
+        .filter(Transaction.embedding.cosine_distance(query_vector) < SIMILARITY_THRESHOLD)
+        .order_by(Transaction.embedding.cosine_distance(query_vector))
+        .limit(MAX_CHUNKS)
+        .all()
+    )
 
-    return results
+    # Fix 1: put most relevant chunk last — closest to the question in the prompt.
+    # Fix 2: already capped at MAX_CHUNKS (5 → fewer than old limit of 10).
+    rows_worst_first = sorted(rows, key=lambda r: r.score)[::-1]
+    return [r.Transaction for r in rows_worst_first]
 
 
 def _format_answer(question: str, sql: str, rows: list) -> str:
+    # Rows are already ordered worst-first by _semantic_search so the most
+    # relevant chunk lands closest to the question in the prompt (Fix 1).
     prompt = f"""You are a personal finance assistant. Answer the question using only the data provided.
-
-Question: {question}
-
-SQL used: {sql}
 
 Results:
 {json.dumps(rows, indent=2, default=str)}
+
+Question: {question}
 
 Rules:
 - Use exact numbers from the results, do not calculate anything yourself
