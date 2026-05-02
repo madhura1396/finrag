@@ -4,7 +4,7 @@ import re
 import httpx
 from sqlalchemy import text
 
-from models import SessionLocal, Transaction, Trip
+from app.models import SessionLocal, Transaction, Trip
 
 
 SCHEMA = """
@@ -109,7 +109,7 @@ MAX_CHUNKS = 5
 
 
 def _semantic_search(question: str, db) -> list:
-    from embedder import generate_embedding
+    from app.embedder import generate_embedding
 
     query_vector = generate_embedding(question)
 

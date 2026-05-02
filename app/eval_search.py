@@ -4,8 +4,8 @@ Tests real queries against expected merchants from your actual statement.
 Run with: python eval_search.py
 """
 import numpy as np
-from embedder import generate_embedding
-from models import SessionLocal, Transaction
+from app.embedder import generate_embedding
+from app.models import SessionLocal, Transaction
 
 
 TEST_CASES = [

@@ -1,12 +1,12 @@
-from extractor import (
+from app.extractor import (
     extract_raw_text,
     parse_statement_period,
     detect_structure,
     parse_transactions_from_text,
 )
-from llm import call_llm_batch
-from embedder import build_embedded_text, generate_embedding
-from models import SessionLocal, Statement, Transaction
+from app.llm import call_llm_batch
+from app.embedder import build_embedded_text, generate_embedding
+from app.models import SessionLocal, Statement, Transaction
 
 
 def extract_from_pdf(filepath: str, filename: str) -> dict:

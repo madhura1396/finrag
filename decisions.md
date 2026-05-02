@@ -1,5 +1,22 @@
 # finrag
 
+## Running the app
+
+```bash
+uvicorn app.main:app --reload
+```
+
+## Project structure
+
+```
+app/          — production FinRAG application
+experiments/  — research and learning scripts (Llama internals, attention, quantization)
+tests/        — manual test scripts (run with python -m tests.<name>)
+uploads/      — uploaded PDF statements
+```
+
+---
+
 A personal financial RAG (Retrieval-Augmented Generation) system that parses Wells Fargo credit card statements and answers natural language questions about spending.
 
 Upload a PDF statement → transactions are extracted, cleaned, and stored in PostgreSQL → ask questions like "how much did I spend on groceries last month" or "show me travel expenses" → the system routes to SQL for exact calculations or vector search for exploratory queries → LLM formats the answer using real numbers from the database.

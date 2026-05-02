@@ -5,9 +5,9 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from pipeline import extract_from_pdf, enrich_transactions
-from query_router import route
-from models import SessionLocal, Statement, Transaction, Trip
+from app.pipeline import extract_from_pdf, enrich_transactions
+from app.query_router import route
+from app.models import SessionLocal, Statement, Transaction, Trip
 
 app = FastAPI()
 

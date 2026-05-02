@@ -1,8 +1,8 @@
 """
 Manual test script for llm.py
-Run with: python test_llm.py
+Run with: python -m tests.test_llm
 """
-from llm import call_llm_batch
+from app.llm import call_llm_batch
 
 
 def separator(title: str):

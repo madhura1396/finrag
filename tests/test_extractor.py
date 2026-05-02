@@ -1,12 +1,12 @@
 """
 Manual test script for extractor.py
-Run with: python test_extractor.py path/to/your/statement.pdf
+Run with: python -m tests.test_extractor path/to/your/statement.pdf
 
 Tests each function in order and prints results.
 Stop at first failure — each function depends on the previous one succeeding.
 """
 import sys
-from extractor import (
+from app.extractor import (
     extract_raw_text,
     parse_statement_period,
     detect_structure,
