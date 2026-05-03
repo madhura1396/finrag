@@ -68,7 +68,14 @@ Rules:
 - For charges use: is_credit = 'false'
 - For payments/refunds use: is_credit = 'true'
 - Use CURRENT_DATE for relative dates like "last month", "this year"
-- Return only the SQL query, no explanation
+- Use ILIKE for merchant name matching e.g. merchant ILIKE '%walmart%'
+
+Think through each step before writing SQL:
+Metric: <what are we measuring — count, sum, list?>
+Table: <which table>
+Filters: <merchant pattern, is_credit value, date range>
+Aggregation: <SUM / COUNT / none>
+SQL: <the final SELECT query>
 
 Question: {question}"""
 
@@ -88,9 +95,13 @@ Question: {question}"""
     )
     response.raise_for_status()
 
-    sql = response.json()["response"].strip()
-    if "```" in sql:
-        sql = re.sub(r"```(?:sql)?", "", sql).strip()
+    raw = response.json()["response"].strip()
+    if "```" in raw:
+        raw = re.sub(r"```(?:sql)?", "", raw).strip()
+
+    # Extract only the final SELECT — CoT reasoning appears before it
+    match = re.search(r"(SELECT\b.*)", raw, re.IGNORECASE | re.DOTALL)
+    sql = match.group(1).strip() if match else raw
     return sql
 
 
