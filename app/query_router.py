@@ -68,14 +68,15 @@ Rules:
 - For charges use: is_credit = 'false'
 - For payments/refunds use: is_credit = 'true'
 - Use CURRENT_DATE for relative dates like "last month", "this year"
-- Use ILIKE for merchant name matching e.g. merchant ILIKE '%walmart%'
+- Filter by category when the user asks about a spending type e.g. category ILIKE '%groceries%'
+- Filter by merchant when the user names a specific store e.g. merchant ILIKE '%walmart%'
 
-Think through each step before writing SQL:
+Think through each step, then write the query:
 Metric: <what are we measuring — count, sum, list?>
 Table: <which table>
-Filters: <merchant pattern, is_credit value, date range>
+Filters: <category or merchant match, is_credit value, date range>
 Aggregation: <SUM / COUNT / none>
-SQL: <the final SELECT query>
+Query: <write the SELECT statement here>
 
 Question: {question}"""
 
@@ -99,8 +100,10 @@ Question: {question}"""
     if "```" in raw:
         raw = re.sub(r"```(?:sql)?", "", raw).strip()
 
-    # Extract only the final SELECT — CoT reasoning appears before it
-    match = re.search(r"(SELECT\b.*)", raw, re.IGNORECASE | re.DOTALL)
+    # Extract only the SELECT block — strip CoT before it and explanation after it.
+    # The model sometimes appends prose after the query; stop at the first blank line
+    # after SELECT, which reliably separates SQL from trailing explanation text.
+    match = re.search(r"(SELECT\b.*?)(?:\n\s*\n|$)", raw, re.IGNORECASE | re.DOTALL)
     sql = match.group(1).strip() if match else raw
     return sql
 
@@ -150,8 +153,10 @@ Results:
 Question: {question}
 
 Rules:
+- The data is always correct — never say the data is missing, unclear, or unavailable
+- If total_spent is in the results, report that number directly
 - Use exact numbers from the results, do not calculate anything yourself
-- Be concise and conversational
+- Be concise — one or two sentences maximum
 - Format amounts as dollars e.g. $45.23"""
 
     response = httpx.post(

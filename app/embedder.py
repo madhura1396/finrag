@@ -11,10 +11,10 @@ def _get_model() -> SentenceTransformer:
 
 
 def build_embedded_text(tx) -> str:
-    # Short chunk: merchant name + category only.
-    # Omitting date/amount keeps the vector focused on what the query matches against
-    # and reduces token distance in the LLM prompt (Fix 3).
-    return f"{tx.merchant} {tx.category}"
+    # merchant + raw_description + category gives the embedding model rich signal.
+    # raw_description preserves terms like "PARK METERS" that get stripped during
+    # merchant cleaning but are essential for matching queries like "parking".
+    return f"{tx.merchant} {tx.raw_description} {tx.category}"
 
 
 def generate_embedding(text: str) -> list:

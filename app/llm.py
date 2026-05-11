@@ -28,10 +28,19 @@ For each transaction return ONLY a JSON array with this exact structure:
 Categories you must choose from (pick the closest match):
 {json.dumps(CATEGORIES, indent=2)}
 
-Rules:
-- merchant: remove noise like store numbers, phone numbers, city/state, transaction codes
-- merchant: keep it short and human-readable e.g. "Trader Joe's", "Southwest Airlines"
-- category: must be exactly one of the categories listed above
+Category rules — follow these exactly:
+- "Groceries": supermarkets and grocery stores e.g. Trader Joe's, Aldi, Walmart, Costco
+- "Dining & DoorDash": restaurants, cafes, food delivery e.g. DoorDash, Uber Eats, Chipotle
+- "Travel & Transport": flights, hotels, gas, rideshare e.g. Southwest Airlines, Agoda, Uber, Costco Gas
+- "Shopping": retail and online stores e.g. Amazon, Shein, Old Navy, TJ Maxx, eBay
+- "Telephone & Internet": phone, internet, software subscriptions e.g. Verizon, Spectrum, Claude.ai, Netflix
+- "Entertainment": events, games, recreation e.g. Ticketmaster, Steam, Spotify
+- "Health & Fitness": gyms, pharmacies, doctors e.g. CVS, Planet Fitness
+- "Other": everything else — freelance platforms (Upwork, Fiverr), government payments, fees, unclear merchants
+
+Merchant rules:
+- Remove noise like store numbers, phone numbers, city/state, transaction codes
+- Keep it short and human-readable e.g. "Trader Joe's", "Southwest Airlines", "DoorDash"
 - Return only valid JSON array, no explanation
 
 Transactions:
