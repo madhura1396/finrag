@@ -118,7 +118,7 @@ def _validate_sql(sql: str) -> bool:
     return True
 
 
-SIMILARITY_THRESHOLD = 0.4
+SIMILARITY_THRESHOLD = 0.75
 MAX_CHUNKS = 5
 
 
