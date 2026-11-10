@@ -6,7 +6,7 @@ I am also using this project to learn senior engineering, so every design choice
 
 ## Scope
 
-- Banks: Wells Fargo, Chase, Discover, Fidelity. PDF statements only.
+- Today: Wells Fargo credit card only (ADR 0002, Decision 1). Target: Wells Fargo, Chase, Discover, Fidelity. PDF statements only.
 - Extraction design is decided in docs/adr/0002-profile-based-extraction.md. Follow it; do not reopen it without asking me.
 - Bank-specific knowledge lives only in profiles/*.yaml. Code in app/ must stay bank-agnostic.
 - app/extractor.py is legacy and will be deleted by the plan in docs/plans/extraction-rebuild.md.
@@ -20,7 +20,7 @@ I am also using this project to learn senior engineering, so every design choice
 ## Code ownership
 
 - Claude writes the code in app/ and tests/. I decide architecture through the decision protocol and review every PR.
-- Before each commit, run senior-reviewer on the diff and fix every blocker. Then tell me the branch name so I can review the diff.
+- When a change is ready, run senior-reviewer on the diff and fix every blocker, then ask me to confirm the commit.
 
 ## Architectural decisions: evaluate with me first
 
@@ -98,7 +98,7 @@ python demo.py                                                      # needs the 
 
 - Never commit to `main`. One branch and one PR per change: `fix/<name>`, `feat/<name>`, `chore/<name>`, `adr/<name>`.
 - Commit messages: imperative subject under 72 characters, then a body that says why.
-- Never push, force push, rebase or delete branches unless I ask.
+- Before every commit, show me git status, the files to be staged and the commit message, and wait for me to confirm. After I confirm, commit and push the branch with git push -u origin <branch>. Never push to main, never force push, never rebase or delete branches.
 - Run `git status` before and after any change and tell me what changed.
 - Stage files by name. Never use git add -A or git add .
 

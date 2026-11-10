@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-10
-- **Supersedes:** ADR 0001 option A. Its guard and reconciliation carry over into Decision 4.
+- **Supersedes:** no recorded ADR. It replaces the zero-row guard proposal for #6 and #7 (options A to D), which was discussed but never written up. The number 0001 is unused.
 - **Related issues:** #6, #7 (silent zero-row parses from `detect_structure`), #8 (`detect_structure` output `KeyError`s into a 500), #3 item 5 (`_parse_date` returns `None`), #12 (statement identity, deferred here).
 
 ## Context
@@ -68,7 +68,7 @@ The statement prints its own totals, so correctness can be checked against the d
 6. **Fees and interest.** Store fees and interest rows as transactions, with their section.
 7. **Concurrency.** Upload stays synchronous while the reader is fast.
 8. **Statement identity.** Stays `(period_start, period_end)` for now.
-9. **Supersedes ADR 0001 option A.** Its guard and reconciliation carry over into Decision 4.
+9. **Replaces the earlier guard proposal for #6 and #7.** Its zero-row guard and reconciliation carry over into Decision 4.
 
 ## Consequences
 
