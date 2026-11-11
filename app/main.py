@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app import categorization, category_store
 from app.models import CategoryRule, ChangeLog, LabelMemory, ReviewItem, Statement, Transaction, Trip
 from app.pipeline import enrich_transactions, extract_from_pdf
+from app.profile import load_single
 from app.query_router import route
 from app.question_form import ModelUnavailable
 from app.sessions import get_session, new_session
@@ -43,6 +44,8 @@ def run_maintenance() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Exactly one layout profile must be present and valid; refuse to start otherwise.
+    load_single()
     # Background tasks are lost on restart, so pending work is retried at startup.
     asyncio.get_running_loop().run_in_executor(None, run_maintenance)
     yield

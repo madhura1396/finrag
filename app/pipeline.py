@@ -1,14 +1,10 @@
-from app.extractor import (
-    extract_raw_text,
-    parse_statement_period,
-    detect_structure,
-    parse_transactions_from_text,
-)
 from sqlalchemy.exc import IntegrityError
 
 from app import categorization, category_store
 from app.categories import SECTION_CATEGORY_KEYS
 from app.models import Statement, Transaction
+from app.profile import load_single
+from app.reader import read_statement
 from app.sessions import new_session
 from app.statement import DuplicateStatement, StatementData, StatementRejected, validate
 
@@ -112,53 +108,10 @@ def persist_statement(data: StatementData, filename: str) -> dict:
 
 
 def extract_from_pdf(filepath: str, filename: str) -> dict:
-    pages = extract_raw_text(filepath)
-    period_start, period_end = parse_statement_period(pages)
-
-    db = new_session()
-
-    try:
-        _raise_if_duplicate(db, period_start, period_end)
-
-        structure        = detect_structure(pages)
-        raw_transactions = parse_transactions_from_text(pages, structure, period_start, period_end)
-
-        statement = Statement(
-            filename=filename,
-            period_start=period_start,
-            period_end=period_end,
-        )
-        db.add(statement)
-        db.flush()
-
-        db_transactions = []
-        for t in raw_transactions:
-            tx = Transaction(
-                statement_id=statement.id,
-                trans_date=t["trans_date"],
-                raw_description=t["raw_description"],
-                merchant=t["raw_description"],
-                amount=t["amount"],
-                is_credit=str(t["is_credit"]).lower(),
-            )
-            db.add(tx)
-            db_transactions.append(tx)
-
-        db.commit()
-
-        return {
-            "statement_id":       statement.id,
-            "period_start":       period_start,
-            "period_end":         period_end,
-            "total_transactions": len(db_transactions),
-        }
-
-    except Exception:
-        db.rollback()
-        raise
-
-    finally:
-        db.close()
+    """Read the PDF with the one layout profile, then validate and store it, or
+    store nothing (ADR 0002). Raises StatementRejected (422) or DuplicateStatement (409)."""
+    data = read_statement(filepath, load_single())
+    return persist_statement(data, filename)
 
 
 def enrich_transactions(statement_id: int) -> dict:

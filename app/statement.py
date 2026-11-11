@@ -247,7 +247,7 @@ def _duplicate_links(summary: dict) -> set[str]:
 def _section_signs(summary: dict[str, SummaryLine]) -> dict[str, int]:
     """Which way each section's rows should point, read from the Account Summary.
 
-    The summary is written from the balance's side ("- Payments", "+ Purchases"),
+    The summary is written from the balance's side (payments subtract from it, purchases add to it),
     rows from the cardholder's side, so a section's rows sum to minus its summary
     sign times its printed total: payments to +total, purchases to -total.
     """
@@ -270,8 +270,8 @@ def _check_section_totals(
     that mixes refunds and charges nets correctly; there, two wrong signs of
     equal size cancel out, which any total-based check shares.
 
-    Direction comes from a liability (credit card) summary, where "- Payments"
-    means payments reduce what you owe. An asset account (checking, savings)
+    Direction comes from a liability (credit card) summary, where payments are
+    subtracted because they reduce what you owe. An asset account (checking, savings)
     reverses that, so its first profile needs an explicit direction per section
     rather than this derivation (ADR 0003, decision 8).
     """

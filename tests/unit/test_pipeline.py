@@ -152,15 +152,13 @@ def test_other_integrity_errors_are_not_disguised(session):
     session.rollback.assert_called_once()
 
 
-def test_legacy_path_raises_duplicate_not_value_error(monkeypatch):
-    s = fake_session(existing=object())
-    monkeypatch.setattr(pipeline, "new_session", lambda: s)
-    monkeypatch.setattr(pipeline, "extract_raw_text", lambda path: [])
-    monkeypatch.setattr(
-        pipeline, "parse_statement_period", lambda pages: (date(2025, 12, 3), date(2026, 1, 2))
-    )
-    with pytest.raises(DuplicateStatement):
-        pipeline.extract_from_pdf("unused.pdf", "s.pdf")
+def test_extract_reads_with_the_single_profile_then_persists(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(pipeline, "load_single", lambda: "PROFILE")
+    monkeypatch.setattr(pipeline, "read_statement", lambda path, profile: calls.setdefault("read", (path, profile)))
+    monkeypatch.setattr(pipeline, "persist_statement", lambda data, name: {"persisted": (data, name)})
+    out = pipeline.extract_from_pdf("s.pdf", "s.pdf")
+    assert calls["read"] == ("s.pdf", "PROFILE") and out == {"persisted": (("s.pdf", "PROFILE"), "s.pdf")}
 
 
 def test_unique_constraint_at_flush_is_reported_as_duplicate(session):
