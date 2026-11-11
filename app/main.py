@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from app.pipeline import extract_from_pdf, enrich_transactions
 from app.query_router import route
 from app.models import SessionLocal, Statement, Transaction, Trip
+from app.statement import REJECT_REASON, DuplicateStatement, StatementRejected
 
 app = FastAPI()
 
@@ -24,10 +25,20 @@ async def upload_statement(file: UploadFile = File(...)):
     with open(filepath, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
+    # Only the two outcomes we can name are mapped. Anything else is a bug and
+    # stays a 500 rather than being dressed up as a conflict.
     try:
         result = extract_from_pdf(filepath, file.filename)
-    except ValueError as e:
+    except DuplicateStatement as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except StatementRejected as e:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "reason":     REJECT_REASON,
+                "mismatches": [m.to_dict() for m in e.mismatches],
+            },
+        )
 
     enrich_result = enrich_transactions(result["statement_id"])
 

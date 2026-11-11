@@ -31,7 +31,7 @@ Branch: `feat/statement-validation`
 |---|---|
 | `migrations/0001_add_transaction_section.sql` (new) | `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS section TEXT NULL;` `IF NOT EXISTS` is there because on a fresh database `create_tables()` already creates the column. The undo line goes in a comment. It stays nullable until the data step. |
 | `app/statement.py` (new) | `StatementData`, `Row`, `SummaryLine`, `Mismatch` dataclasses, the `CHECKS` constant (every check name, below), `validate(data) -> list[Mismatch]`, and exceptions `StatementRejected` (carries mismatches) and `DuplicateStatement`. No PDF, profile, bank or database code, and no import of `app.models`. |
-| `app/pipeline.py` | Raise `DuplicateStatement`, not `ValueError`, for an existing period. Add `persist_statement(data: StatementData, filename: str) -> dict`. It validates, then inserts the statement (with `filename`, because `app/models.py:32` is `nullable=False`) and its rows in one transaction, and returns `{"statement_id", "period_start", "period_end", "total_transactions"}`, the shape `app/main.py:35-38` already uses. Each row stores `section`, and `is_credit` as `'true'`/`'false'` because `app/query_router.py:20,129` depends on the string form. Rows in sections `fees`/`interest` get their final merchant (printed description) and category (`Fees`/`Interest`) here, in the same insert, so an enrichment failure can never leave them as `Other`. Not called by upload yet. |
+| `app/pipeline.py` | Raise `DuplicateStatement`, not `ValueError`, for an existing period. Add `persist_statement(data: StatementData, filename: str) -> dict`. It validates, then inserts the statement (with `filename`, because `app/models.py:32` is `nullable=False`) and its rows in one transaction, and returns `{"statement_id", "period_start", "period_end", "total_transactions"}`, the shape `app/main.py:35-38` already uses. Each row stores `section` and its signed `amount`. `is_credit` is derived from the sign (`'true'` if `amount > 0`, else `'false'`, so a 0.00 row is a charge) and kept as text, because `app/query_router.py:20,129` depends on it (ADR 0003, decision 8). Rows in sections `fees`/`interest` get their final merchant (printed description) and category (`Fees`/`Interest`) here, in the same insert, so an enrichment failure can never leave them as `Other`. Not called by upload yet. |
 | `app/main.py` | Replace the blanket `except ValueError` (`app/main.py:29-30`): `DuplicateStatement` gives 409, `StatementRejected` gives 422. Anything else is a bug and stays a 500. |
 | `app/models.py` | `Transaction.section = Column(String, nullable=True)`, matching the migration. |
 | `requirements-dev.txt` (new) | `pytest`, pinned. |
@@ -44,7 +44,7 @@ Branch: `feat/statement-validation`
 
 ```
 Row:          trans_date: date | None, post_date: date | None, description: str,
-              amount: Decimal, is_credit: bool, section: str
+              amount: Decimal (signed: + payment/refund/credit, - charge/fee/interest), section: str
 SummaryLine:  value: Decimal, sign: int (+1 | -1 | 0 for new_balance), section: str | None
 StatementData:
               period_start: date, period_end: date, rows: list[Row],
@@ -67,17 +67,17 @@ The 422 body (ADR 0003, 5b) is `{"detail": {"reason": "statement did not reconci
 | Check | Raised by | Meaning |
 |---|---|---|
 | `no_text_layer` | reader (raises) | The PDF has no extractable words, for example a scan. |
-| `period_not_found` | reader (raises) | The period pattern was not found. |
+| `period_not_found` | reader (raises), validator | The period pattern was not found, or the period is missing, not a date or reversed. |
 | `period_mismatch` | reader | Pages disagree on the period. |
 | `header_not_found` | reader | The table header row was not found. |
 | `summary_not_found` | reader | The summary start/end anchor or `right_column_anchor` is missing. Never falls back to full width. |
 | `unknown_summary_label` | reader | A row inside the summary block matches no profile label. |
-| `summary_incomplete` | reader, validator | A profile summary line, or `new_balance`, is missing. |
-| `row_invalid` | reader, validator | An unparseable date or amount cell, `amount < 0`, or a null `trans_date`. Zero amounts are valid (ADR 0003, 4b). |
+| `summary_incomplete` | reader, validator | A profile summary line or `new_balance` is missing; a summary value is unreadable or not a `SummaryLine`; a sign is not ±1 (0 for `new_balance`); a line names an unknown section; two lines name the same section; or a section with a printed total has no summary line. |
+| `row_invalid` | reader, validator | An unparseable date or amount cell, an amount that is not a finite `Decimal` with at most 2 decimal places within `Numeric(10,2)`, an unknown section, or a null or non-`date` `trans_date`. Either sign is valid, and so is zero (ADR 0003, 4b and 8). |
 | `no_rows` | validator | `rows` is empty. |
 | `date_window` | validator | A `trans_date` is outside `[period_start - 7 days, period_end]`. |
 | `no_printed_totals` | validator | `section_totals` or `summary` is `None`. This is ADR 0002 Decision 5's "cannot verify: no printed totals". |
-| `section_total` | validator | Per section, the sum of `amount` does not equal the printed total, compared as exact `Decimal`. A section with rows but no printed total also fails, and so does a printed total with no rows unless it is zero. |
+| `section_total` | validator | Per section, the signed sum of `amount` does not equal the printed total times minus that section's summary sign (payments `+total`, purchases `−total`), compared as exact `Decimal`. Also: a printed total that is unreadable or for an unknown section. A section with rows but no printed total also fails, and so does a printed total with no rows unless it is zero. |
 | `summary_equation` | validator | `sum(sign × value)` does not equal `summary["new_balance"].value`. |
 | `unexpected_error` | `check_profiles.py` | Any exception the reader or validator did not turn into a mismatch. Printed instead of the exception, which is never shown. |
 | `summary_section` | validator | A `SummaryLine` with a `section` does not equal `section_totals[section]`. A summary line whose section has no printed total must be zero (this covers Cash Advances). |
@@ -89,7 +89,7 @@ The validator reports every mismatch, not just the first.
   - Multiple mismatches are all reported.
   - Off by one cent fails.
   - 7 days before start passes, 8 days fails, and one day after end fails.
-  - A zero amount passes, and a negative amount fails.
+  - A zero amount and either sign pass. An amount with 3 decimal places, beyond `Numeric(10,2)`, a float or NaN fails.
   - A `None` date fails as a mismatch, not `TypeError`.
   - Nonzero Cash Advances with no section fails.
   - A summary without `new_balance` gives `summary_incomplete`, not `KeyError`.
@@ -97,7 +97,7 @@ The validator reports every mismatch, not just the first.
   - Every check name produced is in `CHECKS`.
 - Pipeline (`SessionLocal` mocked):
   - on rejection, `persist_statement` calls no `add` or `commit`,
-  - on success, it adds one statement with `filename` and N rows with `section` and string `is_credit`,
+  - on success, it adds one statement with `filename` and N rows with `section`, a signed `amount` and an `is_credit` derived from the sign,
   - fee and interest rows get `Fees`/`Interest` in the same insert,
   - it returns the documented dict,
   - a duplicate raises `DuplicateStatement`.
@@ -129,7 +129,8 @@ Branch: `feat/profile-reader`
 | `app/profile.py` (new) | Load the YAML into a typed `Profile` using `yaml.safe_load`. Reject unknown keys, missing keys and wrong types at load time (the lesson of #6 and #8, and the guard against YAML implicit typing). Section keys must come from the canonical set in `app/statement.py`: `payments`, `other_credits`, `purchases`, `cash_advances`, `fees`, `interest`. The pipeline's fee and interest handling depends on these keys across banks. |
 | `app/reader.py` (new) | `read_statement(pdf_path, profile) -> StatementData`. Owns PDF text access and period parsing, which move here from `extractor.py` and `app/pipeline.py:13-14`. Rules below. |
 | `app/pipeline.py` | `extract_from_pdf` loads the single profile, then calls `read_statement`, then `persist_statement`. The guard is live from here. The profile is found as the only `*.yaml` in `profiles/`; zero or several is a startup error. That keeps any bank name out of `app/` and adds no selection logic (ADR 0002, Decision 3). `enrich_transactions` skips rows in sections `fees`/`interest` for `call_llm_batch`, since their category was set at insert (ADR 0003, 2b). They are still embedded. |
-| `app/query_router.py` | Add `Fees` and `Interest` to the valid categories in `TRANSACTIONS_SCHEMA`. No spending filter (ADR 0003, 2a). |
+| `app/query_router.py` | Superseded by the read-path decision (option C: the LLM fills a structured form, code builds the query and states every number; ADR 0004, to be written). That PR must merge before PR2. |
+| (read-path eval) | Moved to the ADR 0004 PR. |
 | `requirements.txt` | Add `pyyaml`. It is a direct dependency now, no longer only pulled in by `transformers`. Left unpinned to match the file; pinning the whole file is a separate decision. |
 | `tests/fixtures/__init__.py`, `tests/fixtures/make_wells_fargo.py` (new) | Synthetic PDF generator, below. |
 | `tests/unit/test_profile.py`, `tests/unit/test_reader.py`, `tests/unit/test_check_profiles.py` (new) | See Tests. |
@@ -233,7 +234,7 @@ summary:
 - Each layout feature has its own test:
   - a continuation page with a repeated header, with no rows duplicated or dropped,
   - a multi-line description stays one row,
-  - Credits gives `is_credit=True` and Charges gives `False`,
+  - an amount in the Credits column gives a positive `amount`, and one in Charges a negative `amount`,
   - a blank card cell is read,
   - undated interest rows get `period_end`,
   - 0.00 interest rows are stored,
@@ -332,6 +333,7 @@ Branch: `chore/remove-legacy-extractor`
 - #3 item 4: enrichment failure after the statement commits.
 - #12: statement identity across cards. Deferred in ADR 0002. This is also the trigger to adopt Alembic (ADR 0003, decision 1).
 - Rejected PDFs stay in `uploads/` (`app/main.py:23-25`).
+- **Mixed signs before the data step.** Between PR2 merging and the re-ingest, legacy rows (unsigned, `section IS NULL`) sit next to signed rows. The ADR 0004 read path must refuse to answer while any `section IS NULL` row exists, or questions are paused until the data step is done.
 - LLM categories are not validated against the category list (`app/pipeline.py:86`, issue #4 item 1). The model could label a purchase `Fees` or `Interest`.
 
 ## Still open

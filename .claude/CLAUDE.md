@@ -54,6 +54,7 @@ Not architectural, so just do it inside the agreed task: naming, refactors insid
 app/            production code
   main.py         FastAPI endpoints
   pipeline.py     write path orchestration
+  statement.py    StatementData contract + validation (bank-agnostic, no DB)
   extractor.py    PDF text + Wells Fargo state machine parser (being replaced)
   llm.py          Ollama enrichment (merchant, category)
   embedder.py     sentence-transformers embeddings
@@ -63,13 +64,14 @@ app/            production code
   reembed.py      one-off re-embedding script
 docs/adr/       architecture decision records
 docs/plans/     implementation plans
+migrations/     numbered SQL scripts; I run them, in order
 profiles/       bank layout profiles, YAML
 experiments/    model-internals research, not part of the app
-tests/          manual print scripts, not pytest yet
+tests/          unit/ = pytest suite; top-level test_*.py = manual scripts
 ```
 
 - `app/` must never import from `experiments/` or `tests/`.
-- Write path: `main.py` -> `pipeline.py` -> `extractor.py`, `llm.py`, `embedder.py` -> `models.py`.
+- Write path: `main.py` -> `pipeline.py` -> `extractor.py`, `statement.py`, `llm.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`.
 - Read path: `main.py` -> `query_router.py` -> `models.py`.
 
 ## Running locally
@@ -81,6 +83,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 # .env needs DATABASE_URL=postgresql://user:password@localhost:5432/finrag
 python -c "from app.models import create_tables; create_tables()"   # not called automatically
+psql "$DATABASE_URL" -f migrations/0001_add_transaction_section.sql # then every migrations/*.sql in order
 uvicorn app.main:app --reload
 python demo.py                                                      # needs the server running
 ```
@@ -90,7 +93,8 @@ python demo.py                                                      # needs the 
 
 ## Tests
 
-- No pytest suite yet. `tests/` holds manual scripts: `python -m tests.test_extractor path/to/statement.pdf`. They need live Ollama and a real PDF.
+- Unit tests: `pip install -r requirements-dev.txt`, then `python -m pytest` from the repo root. They live in `tests/unit/` and need no Ollama, Postgres or `.env` (`tests/conftest.py` disables `load_dotenv` and sets a dummy `DATABASE_URL`).
+- Manual scripts remain in `tests/` and are excluded from pytest: `python -m tests.test_extractor path/to/statement.pdf`. They need live Ollama and a real PDF.
 - New tests must not call Ollama or Postgres unless I ask for an integration test. Mock the HTTP calls.
 - Never commit real statements as test fixtures. Use synthetic statements.
 
