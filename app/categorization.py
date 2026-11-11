@@ -286,6 +286,8 @@ def sync_review(session: Session, tx: Transaction, kinds: set[str], details: dic
         if item.kind not in kinds:
             item.resolved_at = _now()
             item.resolved_by_change_id = change_id
+        elif item.kind in details and item.detail != details[item.kind]:
+            item.detail = details[item.kind]       # e.g. the conflicting rules changed
     for kind in kinds - existing:
         session.add(ReviewItem(transaction_id=tx.id, kind=kind, detail=details.get(kind, {})))
     tx.needs_review = bool(kinds)
@@ -407,11 +409,11 @@ def _mut_rename_category(session, p, change_id):
     return before, {"category_id": identity.category_id, "name": name}, _touched(categories=[identity.category_id])
 
 
-def _merge(session, source_id, target_id, change_id, *, allow_other_target):
+def _merge(session, source_id, target_id, change_id):
     source, source_version = _user_category(session, source_id)
-    # Only `Other` may receive a deleted category: Fees and Interest come only
-    # from the statement section (ADR 0003, 2b).
-    target, _ = _user_category(session, target_id, allowed_system_keys=("other",) if allow_other_target else ())
+    # The target is always a user category: Fees and Interest come only from the
+    # statement section, and Other only from a flagged none_fit (ADR 0005, D).
+    target, _ = _user_category(session, target_id)
     if source.category_id == target.category_id:
         raise ChangeRejected("a category cannot be merged into itself")
 
@@ -441,7 +443,7 @@ def _merge(session, source_id, target_id, change_id, *, allow_other_target):
 
 
 def _mut_merge_category(session, p, change_id):
-    return _merge(session, p.get("source_id"), p.get("target_id"), change_id, allow_other_target=False)
+    return _merge(session, p.get("source_id"), p.get("target_id"), change_id)
 
 
 def _mut_delete_category(session, p, change_id):
@@ -452,8 +454,7 @@ def _mut_delete_category(session, p, change_id):
     `pending` for the model, which may only answer from the remaining
     categories. Nothing is moved into `Other` silently."""
     if p.get("into") is not None:
-        before, after, touched = _merge(session, p.get("category_id"), p["into"], change_id,
-                                        allow_other_target=False)
+        before, after, touched = _merge(session, p.get("category_id"), p["into"], change_id)
         return {**before, "mode": "merge"}, after, touched
 
     identity, version = _user_category(session, p.get("category_id"))
@@ -692,6 +693,16 @@ def _overlaps(a: dict, b: dict) -> bool:
 def _undo_create_category(session, before, after, change_id):
     _, version = _user_category(session, after["category_id"], allow_archived=True)
     _new_version(session, after["category_id"], version.name, True, change_id)
+    # The model may have learned this category for some descriptions since it was
+    # created (enrichment is not a logged change, so it cannot block the undo).
+    # Forget those so the next pass can relearn; user-set memory would have
+    # blocked the undo instead.
+    for entry in session.scalars(select(LabelMemory).where(LabelMemory.category_id == after["category_id"],
+                                                           LabelMemory.category_source == "model")).all():
+        entry.category_id, entry.category_source, entry.updated_at = None, None, _now()
+        if entry.merchant is None:
+            session.delete(entry)
+    session.flush()
 
 
 def _undo_rename_category(session, before, after, change_id):
@@ -850,9 +861,15 @@ def _run(session: Session, payload: dict, change: ChangeLog | None):
     if not isinstance(params, dict):
         raise ChangeRejected("params must be an object")
     change_id = change.change_id if change is not None else None
+    # Snapshot every row's labels first, so the effect also counts rows the
+    # mutation itself wrote (pins re-pointed by a merge, dropped by a delete).
+    snapshot = {tx.id: labels_of(tx) for tx in session.scalars(select(Transaction)).all()}
     before, after, touched = _MUTATIONS[kind](session, params, change_id)
     session.flush()
-    changed = relabel_all(session, change_id)
+    relabel_all(session, change_id)
+    changed = [(tx, snapshot[tx.id], labels_of(tx))
+               for tx in session.scalars(select(Transaction).order_by(Transaction.id)).all()
+               if tx.id in snapshot and labels_of(tx) != snapshot[tx.id]]
     touched = dict(touched)
     touched["transactions"] = sorted(set(touched.get("transactions", [])) | {tx.id for tx, _, _ in changed})
     return before, after, touched, changed
@@ -960,7 +977,9 @@ def enrich_pending(session: Session, statement_id: int | None = None, labeller=l
                 wrote = True
                 if "pending" not in (labels.category_source, labels.merchant_source):
                     labelled += 1
-            sync_review(session, tx, review_kinds(labels, conflicts, after_model=True), details, None)
+            asked = key in model      # rows that became pending mid-call were not asked yet
+            sync_review(session, tx, review_kinds(labels, conflicts, after_model=asked), details, None,
+                        keep_pending=not asked)
 
         if wrote or learned:
             # Only a pass that changed labels or memory invalidates open previews.
@@ -973,6 +992,8 @@ def enrich_pending(session: Session, statement_id: int | None = None, labeller=l
 
 
 def _remember(session: Session, ctx: Context, learned: dict, key: str, *, category_id=None, merchant=None) -> None:
+    # A remembered category that has since been archived is treated as empty,
+    # so memory always heals toward a usable label.
     """Memory only ever holds real labels (never none_fit or failures). Under the
     data_version lock, so concurrent passes cannot both insert the same key."""
     entry = learned.get(key) or session.get(LabelMemory, key)
@@ -980,7 +1001,7 @@ def _remember(session: Session, ctx: Context, learned: dict, key: str, *, catego
         entry = LabelMemory(description_key=key)
         session.add(entry)
     learned[key] = entry
-    if category_id is not None and entry.category_id is None:
+    if category_id is not None and (entry.category_id is None or entry.category_id in ctx.archived):
         entry.category_id, entry.category_source = category_id, "model"
     if merchant is not None and entry.merchant is None:
         entry.merchant, entry.merchant_source = merchant, "model"

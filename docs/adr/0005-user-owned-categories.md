@@ -266,6 +266,18 @@ Settled with the user while building, after the final review of this ADR.
   - `reset_db` requires `--env` and counts trips, rules and memory as data;
   - the integration fixture reads the marker before dropping anything.
 
+- **F. Final review of #21 (fixed):**
+  - undoing a category creation forgets model-learned memory for it, and memory pointing at an archived category is overwritten by the next model answer, so memory always heals toward a usable label;
+  - a change's effect counts every row whose labels changed, including rows the mutation wrote itself (pins re-pointed by a merge, dropped by a delete, set or removed by a pin);
+  - a `pending` review item opens only for rows the model was actually asked about;
+  - an open conflict item's detail is refreshed when the conflicting rules change;
+  - if labelling fails after an upload is saved, the reply carries the real counts (fee and interest rows are already labelled).
+- **G. Known limits, accepted:**
+  - **Undo restores categories, not always sources.** After an undo, rows are re-resolved by the normal precedence, so a formerly `model` row can come back as `memory` with the same category. A row with nothing to re-resolve from falls to `pending` and is asked again.
+  - **A merge only re-points what points at the source.** A `model` row whose key has no memory entry (possible after clearing memory by hand) falls to `pending` rather than to the target. It is visible in the preview as `to_pending`.
+  - **Preview takes no lock.** A preview racing an apply can, rarely, hit a row-lock deadlock and return a 500; the token still guarantees nothing stale is applied. Single-user risk; retry the preview.
+  - **Scale.** Preview and apply re-resolve every row and check review items per row under the lock, and the embedding refresh scans every row. Fine at thousands of rows; apply latency and lock hold time are the first to go, around tens of thousands (unmeasured).
+
 ## Module boundaries
 
 - **`app/category_store.py`** (read only):

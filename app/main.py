@@ -96,7 +96,7 @@ def upload_statement(background: BackgroundTasks, file: UploadFile = File(...)):
         # The statement is already stored. Report its rows as pending rather than
         # a 500 that a retry would turn into a misleading 409; maintenance retries.
         log.exception("labelling failed after upload; rows stay pending and will be retried")
-        enrich_result = {"enriched": 0, "needs_review": 0, "pending": result["total_transactions"]}
+        enrich_result = _counts_after_failure(result)
     background.add_task(run_maintenance)
 
     return {
@@ -108,6 +108,18 @@ def upload_statement(background: BackgroundTasks, file: UploadFile = File(...)):
         "needs_review":       enrich_result["needs_review"],
         "pending":            enrich_result["pending"],
     }
+
+
+def _counts_after_failure(result: dict) -> dict:
+    """Actual counts if the database is reachable (fee and interest rows are
+    already labelled); otherwise every row reported as pending, never fewer."""
+    db = new_session()
+    try:
+        return {"enriched": 0, **categorization.label_counts(db, result["statement_id"])}
+    except Exception:
+        return {"enriched": 0, "needs_review": 0, "pending": result["total_transactions"]}
+    finally:
+        db.close()
 
 
 @app.get("/statements")

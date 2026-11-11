@@ -591,3 +591,83 @@ def test_undo_of_delete_restores_rules_memory_and_labels(labelled):
     assert not db.get(cz.CategoryRule, rule_id_of(db, rule)).deleted
     assert tx_by_desc(db, CAFE).category == "Dining & DoorDash"
     assert_history_matches(db)
+
+
+# --- final review of #21 --------------------------------------------------------
+
+def test_undo_of_a_category_the_model_learned_heals_memory(labelled):
+    db = labelled
+    created = change(db, "create_category", name="Bulk Food")
+    bulk = cat_id(db, "Bulk Food")
+    # Simulate a later model pass filing GROCER rows into the new category (an
+    # unlogged enrichment write), then undo the creation.
+    db.execute(text("UPDATE label_memory SET category_id = :c WHERE description_key = 'GROCER MART SPRINGFIELD'"),
+               {"c": bulk})
+    db.execute(text("UPDATE transactions SET category_id = :c WHERE raw_description IN (:a, :b)"),
+               {"c": bulk, "a": GROCER, "b": GROCER_2})
+    db.execute(text("UPDATE transaction_label_history SET category_id = :c WHERE valid_to IS NULL AND transaction_id IN "
+                    "(SELECT id FROM transactions WHERE raw_description IN (:a, :b))"),
+               {"c": bulk, "a": GROCER, "b": GROCER_2})
+    db.commit()     # harness: raw edits must be committed before code that rolls back its read
+    change(db, "undo", change_id=created["change_id"])        # nothing logged blocks it
+    assert tx_by_desc(db, GROCER).category_source == "pending"
+
+    memory = db.get(LabelMemory, "GROCER MART SPRINGFIELD")
+    assert memory.category_id is None                          # forgotten, not pointing at the archived id
+    calls = []
+    cz.enrich_pending(db, labeller=labeller_from(
+        {"GROCER MART SPRINGFIELD": ModelLabel("Groceries", "Grocer Mart", None)}, calls))
+    assert db.get(LabelMemory, "GROCER MART SPRINGFIELD").category_id == cat_id(db, "Groceries")
+    cz.enrich_pending(db, labeller=labeller_from({}, calls))
+    assert len(calls) == 1                                     # stabilised: not re-asked
+
+
+def test_remember_replaces_an_archived_category(labelled):
+    db = labelled
+    groceries = cat_id(db, "Groceries")
+    change(db, "delete_category", category_id=cat_id(db, "Shopping"))
+    shopping_archived = next(c.category_id for c in category_store.current_categories(db)
+                             if c.name == "Shopping" and c.archived)
+    db.execute(text("UPDATE label_memory SET category_id = :c, category_source = 'model' "
+                    "WHERE description_key = 'CORNER CAFE RIVERTON'"), {"c": shopping_archived})
+    db.execute(text("UPDATE transactions SET category_id = NULL, category_source = 'pending' "
+                    "WHERE raw_description = :d"), {"d": CAFE})
+    db.commit()     # harness: raw edits must be committed before code that rolls back its read
+    cz.enrich_pending(db, labeller=labeller_from({"CORNER CAFE RIVERTON": ModelLabel("Groceries", "Cafe", None)}))
+    assert db.get(LabelMemory, "CORNER CAFE RIVERTON").category_id == groceries
+
+
+def test_merge_effect_counts_pinned_rows(labelled):
+    db = labelled
+    dining = cat_id(db, "Dining & DoorDash")
+    cz.apply(db, {"kind": "pin", "params": {"transaction_id": tx_by_desc(db, GROCER).id,
+                                            "field": "category", "value": dining}}, None)
+    preview = cz.preview(db, {"kind": "merge_category", "params": {"source_id": dining,
+                                                                  "target_id": cat_id(db, "Shopping")}})
+    assert preview["effect"]["rows_changed"] == 2              # the pinned GROCER row and the CAFE row
+
+
+def test_pin_and_unpin_report_their_row(labelled):
+    db = labelled
+    tx = tx_by_desc(db, GROCER)
+    pinned = cz.apply(db, {"kind": "pin", "params": {"transaction_id": tx.id, "field": "category",
+                                                     "value": cat_id(db, "Shopping")}}, None)
+    assert pinned["effect"]["rows_changed"] == 1
+
+
+def test_delete_then_enrichment_then_undo_restores_the_category(labelled):
+    db = labelled
+    dining = cat_id(db, "Dining & DoorDash")
+    cz.apply(db, {"kind": "pin", "params": {"transaction_id": tx_by_desc(db, GROCER_2).id,
+                                            "field": "category", "value": dining}}, None)
+    deleted = change(db, "delete_category", category_id=dining)
+    # CAFE has nothing else to decide it: pending. The pinned GROCER_2 row loses
+    # its pin but memory knows its store: back to Groceries.
+    assert (deleted["effect"]["to_pending"], deleted["effect"]["to_memory"]) == (1, 1)
+    cz.enrich_pending(db, labeller=labeller_from({"CORNER CAFE RIVERTON": ModelLabel("Shopping", "Cafe", None),
+                                                  "GROCER MART SPRINGFIELD": ModelLabel("Groceries", "GM", None)}))
+    assert tx_by_desc(db, CAFE).category == "Shopping"
+    change(db, "undo", change_id=deleted["change_id"])
+    assert tx_by_desc(db, CAFE).category == "Dining & DoorDash"
+    assert (tx_by_desc(db, GROCER_2).category, tx_by_desc(db, GROCER_2).category_source) == ("Dining & DoorDash", "pin")
+    assert_history_matches(db)
