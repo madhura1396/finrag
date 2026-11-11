@@ -1,0 +1,12 @@
+# Copy to ~/.finrag/search_eval.yaml (or point FINRAG_SEARCH_EVAL at it) and
+# replace with merchants from your own statements. That file stays out of git.
+# Invented examples:
+- query: grocery shopping
+  expected: ["Grocer Mart", "Fresh Fields"]
+- query: food delivery
+  expected: ["FoodDash"]
+- query: parking
+  expected: ["Metro Parking Meters"]
+- query: refunds from online shops
+  direction: refunds
+  expected: ["Megastore"]

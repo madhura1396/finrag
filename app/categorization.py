@@ -241,7 +241,7 @@ def open_history(session: Session, tx: Transaction, change_id: int | None, at: d
 def set_labels(session: Session, tx: Transaction, new: Labels, change_id: int | None,
                names: dict[int, str]) -> bool:
     """Write labels if they changed: close the open history version, open a new
-    one, update the current columns and the transitional text. Append-only."""
+    one, and update the current columns. Append-only."""
     if labels_of(tx) == new:
         return False
     at = _now()     # one instant: the closed version ends where the new one starts
@@ -252,7 +252,6 @@ def set_labels(session: Session, tx: Transaction, new: Labels, change_id: int | 
     )
     for field, value in asdict(new).items():
         setattr(tx, field, value)
-    tx.category = names.get(new.category_id) if new.category_id is not None else None
     session.flush()
     open_history(session, tx, change_id, at)
     return True
@@ -358,9 +357,6 @@ def _new_version(session: Session, category_id: int, name: str, archived: bool, 
         session.flush()
     session.add(CategoryVersion(category_id=category_id, name=name, archived=archived, change_id=change_id,
                                 valid_from=at))
-    # TRANSITIONAL: keep the derived text copy in step with the name. This is
-    # the only transaction-row write a rename makes (ADR 0005, decision 7).
-    session.execute(update(Transaction).where(Transaction.category_id == category_id).values(category=name))
     session.flush()
 
 

@@ -47,7 +47,6 @@ def persist_statement(data: StatementData, filename: str) -> dict:
         # Uploads bump data_version, so a preview taken before this upload is stale.
         categorization.lock_version(db)
         _raise_if_duplicate(db, data.period_start, data.period_end)
-        names = category_store.names_by_id(db)
         section_ids = {section: category_store.system_category_id(db, key)
                        for section, key in SECTION_CATEGORY_KEYS.items()}
 
@@ -80,7 +79,6 @@ def persist_statement(data: StatementData, filename: str) -> dict:
                 category_source="section" if row.section in section_ids else "pending",
                 merchant_source="section" if row.section in section_ids else "pending",
             )
-            tx.category = names.get(tx.category_id)
             db.add(tx)
             db.flush()
             categorization.open_history(db, tx, None)

@@ -1,105 +1,69 @@
+"""Retrieval eval for the `search` question type, at the production cutoff and
+cap (app/read_settings.py), against your own database.
+
+    python -m app.eval_search [cases.yaml]
+
+The cases name real merchants from your statements, so they live outside the
+repo: FINRAG_SEARCH_EVAL, default ~/.finrag/search_eval.yaml. The format is
+evals/search_eval.example.yaml (invented names). Prints hits and misses per
+query, to tune SEARCH_CUTOFF.
 """
-Evaluation script for semantic search.
-Tests real queries against expected merchants from your actual statement.
-Run with: python eval_search.py
-"""
-import numpy as np
+
+import os
+import sys
+from pathlib import Path
+
+import yaml
+
+from app import read_settings as rs
+from app.calculations import category_of
 from app.embedder import generate_embedding
-from app.models import SessionLocal, Transaction
+from app.read_queries import search
+from app.sessions import new_session
 
 
-TEST_CASES = [
-    {
-        "query":    "grocery shopping",
-        "expected": ["Trader Joe's", "Aldi", "Costco", "WM Supercenter"],
-    },
-    {
-        "query":    "food delivery",
-        "expected": ["DoorDash"],
-    },
-    {
-        "query":    "flights and hotels",
-        "expected": ["Agoda.com", "Snow.com/Vail Resorts"],
-    },
-    {
-        "query":    "online shopping",
-        "expected": ["Shein", "Old Navy", "eBay", "TJ Maxx"],
-    },
-    {
-        "query":    "freelance work payment",
-        "expected": ["Upwork"],
-    },
-    {
-        "query":    "streaming and subscriptions",
-        "expected": ["Claude.ai"],
-    },
-    {
-        "query":    "parking",
-        "expected": ["City of Rochester Park Meters", "CITY OF ROCHESTER"],
-    },
-]
-
-
-def search(query: str, db, threshold: float = 1.0) -> list:
-    query_vector = generate_embedding(query)
-    results = db.query(Transaction).filter(
-        Transaction.embedding.cosine_distance(query_vector) < threshold
-    ).order_by(
-        Transaction.embedding.cosine_distance(query_vector)
-    ).limit(10).all()
-    return results
-
-
-def cosine_distance(a, b) -> float:
-    a = np.array(a)
-    b = np.array(b)
-    return round(1 - float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))), 3)
+def cases_path(argv: list[str]) -> Path:
+    if argv:
+        return Path(argv[0])
+    return Path(os.path.expanduser(os.getenv("FINRAG_SEARCH_EVAL", "~/.finrag/search_eval.yaml")))
 
 
 def separator(title):
-    print(f"\n{'='*60}")
-    print(f"  {title}")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}\n  {title}\n{'=' * 60}")
 
 
-db = SessionLocal()
+def main(argv=None) -> int:
+    path = cases_path(sys.argv[1:] if argv is None else argv)
+    if not path.exists():
+        print(f"no cases at {path}; copy evals/search_eval.example.yaml there and edit it", file=sys.stderr)
+        return 2
+    cases = yaml.safe_load(path.read_text()) or []
 
-all_hits   = 0
-all_misses = 0
+    hits = misses = 0
+    db = new_session()
+    try:
+        for case in cases:
+            separator(f'Query: "{case["query"]}"')
+            vector = generate_embedding(case["query"])
+            results = search(db, vector, case.get("direction", "spent"), None, None, rs.SEARCH_CUTOFF, rs.SEARCH_CAP)
+            for row in results:
+                print(f"  {row.merchant:35s}  {category_of(row):25s}")
+            returned = [r.merchant.lower() for r in results]
+            for expected in case["expected"]:
+                if any(expected.lower() in m or m in expected.lower() for m in returned):
+                    hits += 1
+                else:
+                    misses += 1
+                    print(f"  MISSED EXPECTED: {expected}")
+    finally:
+        db.close()
 
-for tc in TEST_CASES:
-    separator(f"Query: \"{tc['query']}\"")
-    results = search(tc["query"], db)
+    separator("SUMMARY")
+    total = hits + misses
+    print(f"cutoff {rs.SEARCH_CUTOFF}, cap {rs.SEARCH_CAP}: {hits}/{total} expected merchants found"
+          + (f" ({round(hits / total * 100)}%)" if total else ""))
+    return 0
 
-    print(f"{'Merchant':35s}  {'Category':25s}  {'Distance':>8s}  Match?")
-    print("-" * 85)
 
-    query_vector = generate_embedding(tc["query"])
-
-    for tx in results:
-        dist  = cosine_distance(query_vector, tx.embedding)
-        match = any(e.lower() in tx.merchant.lower() or tx.merchant.lower() in e.lower()
-                    for e in tc["expected"])
-        flag  = "✓" if match else "✗"
-        print(f"{tx.merchant:35s}  {(tx.category or 'pending'):25s}  {dist:>8.3f}  {flag}")
-
-    returned_merchants = [tx.merchant for tx in results]
-    for expected in tc["expected"]:
-        found = any(expected.lower() in m.lower() or m.lower() in expected.lower()
-                    for m in returned_merchants)
-        if not found:
-            print(f"  MISSED EXPECTED: {expected}")
-            all_misses += 1
-        else:
-            all_hits += 1
-
-db.close()
-
-separator("SUMMARY")
-total = all_hits + all_misses
-print(f"Hits  : {all_hits}/{total}")
-print(f"Misses: {all_misses}/{total}")
-print(f"Score : {round(all_hits/total*100)}%" if total > 0 else "No results")
-print()
-print("Use this output to decide the right distance threshold.")
-print("Look at the highest distance of a correct hit — that is your threshold ceiling.")
+if __name__ == "__main__":
+    sys.exit(main())

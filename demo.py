@@ -13,35 +13,34 @@ import httpx
 BASE = "http://localhost:8000"
 
 QUERIES = [
-    # SQL — aggregation
     {
         "question": "How much did I spend on groceries in December 2025?",
-        "note":     "SQL path — category filter + SUM",
+        "note":     "total_spent — category filter",
     },
     # SQL — merchant specific
     {
         "question": "How much did I spend on shopping in December 2025?",
-        "note":     "SQL path — category filter + SUM",
+        "note":     "total_spent — category filter",
     },
     # SQL — count
     {
         "question": "How many transactions did I make in December 2025?",
-        "note":     "SQL path — COUNT with date range",
+        "note":     "count — date range",
     },
     # SQL — ranking
     {
         "question": "Which merchant did I spend the most at?",
-        "note":     "SQL path — GROUP BY merchant, ORDER BY total DESC",
+        "note":     "ranking — merchants, most first",
     },
     # Semantic
     {
         "question": "Find charges that look like parking or city fees",
-        "note":     "Semantic path — vector similarity search",
+        "note":     "search — similarity, total labelled as fuzzy",
     },
     # Semantic
     {
         "question": "Any charges that look like online shopping?",
-        "note":     "Semantic path — vector similarity search",
+        "note":     "search — similarity, total labelled as fuzzy",
     },
 ]
 
@@ -62,22 +61,42 @@ def run_query(question: str, note: str):
             json={"question": question},
             timeout=60,
         )
-        resp.raise_for_status()
-        data = resp.json()
     except httpx.HTTPError as e:
         print(f"  ERROR: {e}")
         return
+    if resp.status_code == 503:
+        print("  The local model is unavailable. Is Ollama running with llama3.2?")
+        return
+    if resp.status_code != 200:
+        print(f"  ERROR: HTTP {resp.status_code}: {resp.text}")
+        return
+    data = resp.json()
+
+    # ADR 0004: how the question was read comes first, so a misread is visible.
+    if data.get("understood_as"):
+        print(f"  {data['understood_as']}")
+    if data["type"] == "refused":
+        print(f"  Refused: {data['answer']}")
+        details = {k: v for k, v in data["result"].items() if k not in ("reason", "kind")}
+        if details:
+            print(f"  Details: {json.dumps(details, default=str)}")
+        return
 
     print(f"  Answer : {data['answer']}")
-    print(f"  Route  : {data['type'].upper()}")
-
-    if data.get("sql"):
-        # Print SQL on one line for readability
-        sql_oneline = " ".join(data["sql"].split())
-        print(f"  SQL    : {sql_oneline}")
-
-    if data.get("rows"):
-        print(f"  Rows   : {json.dumps(data['rows'], default=str)}")
+    if data["rewrite"] != "accepted":
+        print(f"  (exact answer shown; rewrite {data['rewrite']})")
+    table = (data.get("result") or {}).get("table")
+    if table:
+        for line in table:
+            print(f"    {json.dumps(line, default=str)}")
+    elif data.get("rows"):
+        shown = len(data["rows"])
+        print(f"  Rows   : {shown} of {data.get('rows_total', shown)}")
+        for r in data["rows"][:10]:
+            print(f"    {r['date']}  {r['merchant']:30s}  {r['amount']:>10s}  {r['category']}")
+    notes = {k: v for k, v in (data.get("notes") or {}).items() if v}
+    if notes:
+        print(f"  Notes  : {notes}")
 
 
 def main():
