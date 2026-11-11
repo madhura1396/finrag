@@ -108,7 +108,6 @@ def test_fee_and_interest_rows_get_fixed_category_at_insert(session):
         rows = [tx for tx in txs if tx.section == section]
         assert rows
         assert all(tx.category_id == SECTION_IDS[section] and tx.category_source == "section" for tx in rows)
-        assert all(tx.category == category for tx in rows)            # transitional text copy
         assert all(tx.merchant == tx.raw_description and tx.merchant_source == "section" for tx in rows)
 
 
@@ -117,7 +116,7 @@ def test_other_rows_start_pending_with_no_category(session):
     purchases = [o for o in session.added if isinstance(o, Transaction) and o.section == "purchases"]
     assert purchases
     for tx in purchases:
-        assert (tx.category_id, tx.category_source, tx.category) == (None, "pending", None)
+        assert (tx.category_id, tx.category_source) == (None, "pending")
         assert tx.merchant_source == "pending"
 
 

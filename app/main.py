@@ -15,6 +15,7 @@ from app import categorization, category_store
 from app.models import CategoryRule, ChangeLog, LabelMemory, ReviewItem, Statement, Transaction, Trip
 from app.pipeline import enrich_transactions, extract_from_pdf
 from app.query_router import route
+from app.question_form import ModelUnavailable
 from app.sessions import get_session, new_session
 from app.statement import REJECT_REASON, DuplicateStatement, StatementRejected
 
@@ -166,17 +167,14 @@ class QueryRequest(BaseModel):
 
 
 @app.post("/query")
-def query(request: QueryRequest):
+def query(request: QueryRequest, db: Session = Depends(get_session)):
+    """ADR 0004: a refusal is a normal 200 answer; an unreachable model is a 503."""
     if not request.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
-
-    result = route(request.question)
-    return {
-        "answer": result["answer"],
-        "type":   result["type"],
-        "sql":    result.get("sql"),
-        "rows":   result.get("rows", []),
-    }
+    try:
+        return route(request.question, db)
+    except ModelUnavailable:
+        raise HTTPException(status_code=503, detail="local model unavailable; is Ollama running?")
 
 
 class TripRequest(BaseModel):

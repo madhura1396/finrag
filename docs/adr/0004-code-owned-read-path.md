@@ -352,3 +352,33 @@ A script, run by hand with Ollama up, not a unit test. It sends each eval questi
   - timeouts (30 s, 15 s).
 - **Dependency:** the eval's question files are YAML, so `pyyaml` becomes a direct dependency in this PR rather than in PR2.
 - **Follow-up decision: ADR 0005,** user-owned categories with deterministic rules (write path).
+
+## Implementation notes (read-path PR, 2026-11-11)
+
+- **Few-shot examples** live in `app/query_router.py` (`TEACH_EXAMPLES`), because the app uses them at runtime and `app/` must not import `evals/`. `evals/read_path/run.py` refuses to run if any test question overlaps them, which keeps the teach/test split of detail 7.
+- **A whole year** (`YYYY`) was added to the period forms, because users say "in 2026" and the model writes it that way.
+- **Table answers are never rewritten,** including their summary line. Only the sentence types (`total_spent`, `total_received`, `count`, `compare`, `search`) get the placeholder rewrite.
+- **History and comparison types fetch every row.** Their history reaches outside the asked period; this stays within the scale limit recorded under Testing.
+- **The transitional `transactions.category` text column is dropped** (ADR 0005). An existing database needs `migrations/0002_drop_transitional_category.sql`, run by the user.
+- **The search eval's cases moved out of the repo** to `~/.finrag/search_eval.yaml`, because they named real merchants. `evals/search_eval.example.yaml` shows the format with invented names.
+- **Eval baseline,** 79 synthetic questions, served Q4 llama3.2 through Ollama, temperature 0:
+
+  | Prompt | Form accuracy | Rewrites accepted |
+  |---|---|---|
+  | First version | 11/79 (13.9%) | 10/50 (20%) |
+  | Stricter field rules, category vs merchant, `YYYY`, 17 few-shot examples; the rewrite prompt told that tokens are hidden complete clauses | 31/79 (39.2%) | 50/50 (100%) |
+
+  The second row also scores unsupported questions on their type only, since the resolver ignores their other fields. The weakest types are `largest` (0/4), `search` (0/5), `savings_opportunities` (0/4) and `ranking` (1/8); the weakest field is `period` (43/69).
+  - At 39%, misreads are common. The answer is still exact for what was understood, and the "Understood as" line shows the reading on every answer, which is why that line stays always-on (detail 4).
+  - Raising form accuracy is prompt work for a follow-up, measured with the same eval.
+  - The 100% rewrite rate comes from very similar output at temperature 0 ("Here is what I found: …"). It is natural but repetitive.
+- **Code review (read-path PR) changes:**
+  - **Fields a type does not apply are dropped at resolve time,** so the "Understood as" line never shows a filter that was not computed. For example, `anomalies` and `savings_opportunities` take only a period.
+  - **Search applies category and merchant in SQL before its cap,** and says when the cap was hit.
+  - **Monthly trends** treat a month clipped by the asked range as partial, and compare only whole, consecutive months.
+  - **"No data" only when nothing was found:** coverage `none` with rows present still answers.
+  - **`category_change` shows totals and per-day figures** when lengths differ.
+  - **Notes cover every period an answer used.**
+  - **A stated year is never rolled back.**
+  - **The closed glue-word list grew** by rate words (per, each, every, daily, weekly, monthly, average, …), negation and doubt (cannot, neither, nor, hardly, …), conditionals and hedges (if, unless, maybe, might, would, …) and judgement words (good, bad, great, nice, well, …). The rewrite prompt no longer suggests "Good news" or "while".
+  - **Re-run eval:** form accuracy 31/79 (39.2%), rewrites 50/50, unchanged.

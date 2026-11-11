@@ -197,8 +197,8 @@ class Transaction(Base):
     # Never use Float for money.
     amount = Column(Numeric(10, 2), nullable=False)
     # Signed (ADR 0003, 8): positive = payment, refund or credit; negative =
-    # charge, fee or interest. is_credit is derived from the sign; kept for the
-    # current SQL prompt until the read-path PR.
+    # charge, fee or interest. is_credit is derived from the sign; nothing on the
+    # read path reads it any more (ADR 0004).
     is_credit = Column(String, nullable=False, default="false")
 
     # Statement section the row was printed under, one of app.statement.SECTIONS.
@@ -212,10 +212,6 @@ class Transaction(Base):
     merchant = Column(String, nullable=False)       # cleaned name; the description until labelled
     merchant_source = Column(String, nullable=False, default="pending")
     merchant_rule_id = Column(Integer, ForeignKey("category_rules.rule_id"), nullable=True)
-
-    # TRANSITIONAL (ADR 0005): derived copy of the current category name for the
-    # pre-ADR-0004 /query code. NULL while pending. Dropped by the read-path PR.
-    category = Column(String, nullable=True)
 
     # Set when a label could not be decided: none_fit, a rule conflict, or a
     # model failure. Details live in review_items.

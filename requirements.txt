@@ -10,3 +10,4 @@ ollama
 python-dotenv
 numpy
 httpx
+pyyaml

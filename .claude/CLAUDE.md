@@ -65,9 +65,14 @@ app/            production code
   llm.py            Ollama labelling: temperature 0, schema-constrained, validated
   embedding_text.py embedded text + stale check (no heavy imports)
   embedder.py       sentence-transformers embeddings
-  query_router.py   read path: classify, SQL generation, semantic search, formatting
+  query_router.py   read path orchestration: form -> rows -> numbers -> answer (ADR 0004)
+  question_form.py  question -> validated form; dates, merchants, trips resolved by code
+  read_queries.py   the read path's five SQL queries (thin; date-filtered)
+  calculations.py   every read-path number, pure Python over Decimal
+  answers.py        exact answers, the "Understood as" line, the checked placeholder rewrite
+  read_settings.py  read-path thresholds, timeouts, glue-word list, refused-question log path
   models.py         SQLAlchemy models, engine (guarded), SessionLocal
-  eval_search.py    retrieval eval script (runs on import)
+  eval_search.py    search eval; cases from ~/.finrag/search_eval.yaml (outside the repo)
   reembed.py        re-embed stale rows
 docs/adr/       architecture decision records
 docs/plans/     implementation plans
@@ -75,13 +80,14 @@ migrations/     historical SQL; the schema is now rebuilt by scripts/reset_db.py
 scripts/        reset_db.py (guarded schema reset)
 profiles/       bank layout profiles, YAML
 experiments/    model-internals research, not part of the app
+evals/          read_path/ form eval (synthetic questions; needs Ollama); search_eval.example.yaml
 tests/          unit/ = pytest suite; integration/ = finrag_test suite; top-level test_*.py = manual scripts
 ```
 
 - `app/` must never import from `experiments/` or `tests/`.
 - Write path: `main.py` -> `pipeline.py` -> `extractor.py`, `statement.py`, `categorization.py` -> `category_store.py`, `llm.py`, `embedding_text.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`. The read path never imports `categorization.py`.
 - Setup: `scripts/reset_db.py` -> `db_setup.py` -> `models.py`, `categories.py`. `models.py` imports only `db_guard.py`.
-- Read path: `main.py` -> `query_router.py` -> `models.py`.
+- Read path: `main.py` -> `query_router.py` -> `question_form.py`, `read_queries.py`, `calculations.py`, `answers.py`, `embedder.py`, `embedding_text.py`, `category_store.py`, `read_settings.py` -> `models.py`. The read path never imports `categorization.py` or `llm.py`.
 
 ## Running locally
 
@@ -97,7 +103,8 @@ uvicorn app.main:app --reload                                      # binds 127.0
 python demo.py                                                      # needs the server running
 ```
 
-- Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `extractor.py`, `llm.py` and `query_router.py`.
+- Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `extractor.py`, `llm.py` and `read_settings.py`.
+- Form eval: `python -m evals.read_path.run [--rewrite]` (Ollama up). Few-shot examples live in `query_router.TEACH_EXAMPLES`; the eval refuses any overlap with its questions.
 - Every database carries an environment marker (`db_environment`): `finrag` is `production`, `finrag_test` is `test`. Connections compare it with `FINRAG_ENV` (default `production`) and refuse on a mismatch or a missing marker.
 - The label endpoints (`/changes/*`, `/categories`, `/rules`, `/memory`, `/review`, `/enrichment/retry`, `/embeddings/refresh`) write real data with no authentication. Never expose the API beyond this machine without an authentication decision first.
 - `experiments/` needs torch, transformers, matplotlib, seaborn and llama_cpp, which are not in `requirements.txt`.
@@ -121,6 +128,7 @@ python demo.py                                                      # needs the 
 ## Data safety
 
 - Never read `.env` or anything in `uploads/`. They hold credentials and real bank statements.
+- Never read the refused-question log (`FINRAG_REFUSED_LOG`, default `~/.finrag/refused_questions.log`) or `~/.finrag/search_eval.yaml`. They hold my questions and real merchant names.
 - Never run SQL that writes to the database (INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER) unless I ask. Exception: the integration suite may write to `finrag_test` (never `finrag`), and `scripts/reset_db.py` may target `finrag_test` in tests. Running `reset_db` against `finrag` needs my explicit ask.
 - Rules, label memory, pins and the change log hold real merchant text and live only in the database. Never copy them into the repo, fixtures or docs.
 - Never paste real transaction data into commit messages, PRs, ADRs or docs.

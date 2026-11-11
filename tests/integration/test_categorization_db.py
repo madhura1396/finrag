@@ -53,6 +53,11 @@ def cat_id(db, name):
     return next(c.category_id for c in category_store.current_categories(db) if c.name == name)
 
 
+def name_of(db, tx):
+    """The row's current category name (None while pending)."""
+    return category_store.names_by_id(db).get(tx.category_id) if tx.category_id is not None else None
+
+
 def tx_by_desc(db, description):
     return db.scalar(select(Transaction).where(Transaction.raw_description == description))
 
@@ -165,7 +170,7 @@ def test_enrichment_uses_one_model_call_per_key_and_remembers(uploaded):
     for desc in (GROCER, GROCER_2):
         tx = tx_by_desc(uploaded, desc)
         assert (tx.category_source, tx.merchant, tx.merchant_source) == ("model", "Grocer Mart", "model")
-        assert tx.category == "Groceries"                           # transitional text copy
+        assert name_of(uploaded, tx) == "Groceries"
     memory = uploaded.get(LabelMemory, "GROCER MART SPRINGFIELD")
     assert memory.category_source == "model" and memory.merchant == "Grocer Mart"
     assert result["pending"] == 0
@@ -312,7 +317,7 @@ def test_deleting_a_rule_falls_back_to_memory_without_calling_the_model(labelled
     result = change(db, "delete_rule", rule_id=rule_id)
     assert result["effect"]["to_memory"] == 2
     tx = tx_by_desc(db, GROCER)
-    assert (tx.category_source, tx.category) == ("memory", "Groceries")
+    assert (tx.category_source, name_of(db, tx)) == ("memory", "Groceries")
 
 
 # --- undo, rename, merge ------------------------------------------------------
@@ -324,7 +329,7 @@ def test_undo_is_a_compensating_change_and_history_is_append_only(labelled):
                      category_id=cat_id(db, "Shopping"))
     change(db, "undo", change_id=created["change_id"])
     tx = tx_by_desc(db, GROCER)
-    assert tx.category == "Groceries"
+    assert name_of(db, tx) == "Groceries"
     # Two relabels per matching row (rule, then undo), nothing rewritten.
     assert db.scalar(text("SELECT COUNT(*) FROM transaction_label_history")) == versions_before + 4
     assert_history_matches(db)
@@ -348,7 +353,7 @@ def test_rename_changes_no_labels_and_keeps_old_name_in_time(labelled):
     history_before = db.scalar(text("SELECT COUNT(*) FROM transaction_label_history"))
     change(db, "rename_category", category_id=groceries, name="Food at home")
     assert db.scalar(text("SELECT COUNT(*) FROM transaction_label_history")) == history_before
-    assert tx_by_desc(db, GROCER).category == "Food at home"     # transitional text follows
+    assert name_of(db, tx_by_desc(db, GROCER)) == "Food at home"
     old = db.scalar(select(CategoryVersion.valid_from).where(CategoryVersion.category_id == groceries)
                     .order_by(CategoryVersion.valid_from))
     assert category_store.name_at(db, groceries, old) == "Groceries"
@@ -358,11 +363,11 @@ def test_merge_repoints_and_archives_and_undo_restores(labelled):
     db = labelled
     dining, shopping = cat_id(db, "Dining & DoorDash"), cat_id(db, "Shopping")
     merged = change(db, "merge_category", source_id=dining, target_id=shopping)
-    assert tx_by_desc(db, CAFE).category == "Shopping"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Shopping"
     archived = next(c for c in category_store.current_categories(db) if c.category_id == dining)
     assert archived.archived
     change(db, "undo", change_id=merged["change_id"])
-    assert tx_by_desc(db, CAFE).category == "Dining & DoorDash"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Dining & DoorDash"
     assert_history_matches(db)
 
 
@@ -418,7 +423,7 @@ def test_undo_two_overlapping_changes_newest_first(labelled):
                     category_id=cat_id(db, "Entertainment"))
     change(db, "undo", change_id=second["change_id"])
     change(db, "undo", change_id=first["change_id"])          # no longer stuck behind the undone pair
-    assert tx_by_desc(db, GROCER).category == "Groceries"
+    assert name_of(db, tx_by_desc(db, GROCER)) == "Groceries"
     assert_history_matches(db)
 
 
@@ -451,10 +456,10 @@ def test_unpin_falls_back_and_undo_restores_the_pin(labelled):
                                                      "value": cat_id(db, "Shopping")}}, None)
     unpinned = cz.apply(db, {"kind": "unpin", "params": {"transaction_id": tx.id, "field": "category"}}, None)
     tx = tx_by_desc(db, GROCER)
-    assert (tx.category, tx.category_source) == ("Groceries", "memory")
+    assert (name_of(db, tx), tx.category_source) == ("Groceries", "memory")
     change(db, "undo", change_id=unpinned["change_id"])
     tx = tx_by_desc(db, GROCER)
-    assert (tx.category, tx.category_source) == ("Shopping", "pin")
+    assert (name_of(db, tx), tx.category_source) == ("Shopping", "pin")
     assert pinned["change_id"] < unpinned["change_id"]
     assert_history_matches(db)
 
@@ -464,10 +469,10 @@ def test_set_memory_normalises_the_key_and_relabels_and_undo_restores(labelled):
     result = change(db, "set_memory", description_key="grocer mart #555 springfield",
                     category_id=cat_id(db, "Shopping"))
     assert db.get(LabelMemory, "GROCER MART SPRINGFIELD").category_source == "user"
-    assert tx_by_desc(db, GROCER).category == "Shopping"
+    assert name_of(db, tx_by_desc(db, GROCER)) == "Shopping"
     change(db, "undo", change_id=result["change_id"])
     assert db.get(LabelMemory, "GROCER MART SPRINGFIELD").category_source == "model"
-    assert tx_by_desc(db, GROCER).category == "Groceries"
+    assert name_of(db, tx_by_desc(db, GROCER)) == "Groceries"
 
 
 def test_edit_rule_changes_its_target_and_undo_restores(labelled):
@@ -475,9 +480,9 @@ def test_edit_rule_changes_its_target_and_undo_restores(labelled):
     rule = change(db, "create_rule", pattern="CAFE", kind="contains", priority=1,
                   category_id=cat_id(db, "Shopping"))
     edited = change(db, "edit_rule", rule_id=rule_id_of(db, rule), category_id=cat_id(db, "Entertainment"))
-    assert tx_by_desc(db, CAFE).category == "Entertainment"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Entertainment"
     change(db, "undo", change_id=edited["change_id"])
-    assert tx_by_desc(db, CAFE).category == "Shopping"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Shopping"
 
 
 def test_undo_of_category_creation_archives_it(labelled):
@@ -565,14 +570,14 @@ def test_delete_withdraws_the_category_and_the_model_re_decides(labelled):
         return {k: ModelLabel("Shopping", "Corner Cafe", None) for k in descriptions}
     cz.enrich_pending(db, labeller=labeller)
     assert "Dining & DoorDash" not in offered
-    assert tx_by_desc(db, CAFE).category == "Shopping"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Shopping"
     assert_history_matches(db)
 
 
 def test_delete_with_into_is_a_merge(labelled):
     db = labelled
     change(db, "delete_category", category_id=cat_id(db, "Dining & DoorDash"), into=cat_id(db, "Groceries"))
-    assert tx_by_desc(db, CAFE).category == "Groceries"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Groceries"
 
 
 def test_delete_into_other_explicitly_is_refused(labelled):
@@ -589,7 +594,7 @@ def test_undo_of_delete_restores_rules_memory_and_labels(labelled):
     deleted = change(db, "delete_category", category_id=dining)
     change(db, "undo", change_id=deleted["change_id"])
     assert not db.get(cz.CategoryRule, rule_id_of(db, rule)).deleted
-    assert tx_by_desc(db, CAFE).category == "Dining & DoorDash"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Dining & DoorDash"
     assert_history_matches(db)
 
 
@@ -666,8 +671,8 @@ def test_delete_then_enrichment_then_undo_restores_the_category(labelled):
     assert (deleted["effect"]["to_pending"], deleted["effect"]["to_memory"]) == (1, 1)
     cz.enrich_pending(db, labeller=labeller_from({"CORNER CAFE RIVERTON": ModelLabel("Shopping", "Cafe", None),
                                                   "GROCER MART SPRINGFIELD": ModelLabel("Groceries", "GM", None)}))
-    assert tx_by_desc(db, CAFE).category == "Shopping"
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Shopping"
     change(db, "undo", change_id=deleted["change_id"])
-    assert tx_by_desc(db, CAFE).category == "Dining & DoorDash"
-    assert (tx_by_desc(db, GROCER_2).category, tx_by_desc(db, GROCER_2).category_source) == ("Dining & DoorDash", "pin")
+    assert name_of(db, tx_by_desc(db, CAFE)) == "Dining & DoorDash"
+    assert (name_of(db, tx_by_desc(db, GROCER_2)), tx_by_desc(db, GROCER_2).category_source) == ("Dining & DoorDash", "pin")
     assert_history_matches(db)

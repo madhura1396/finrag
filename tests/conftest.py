@@ -33,3 +33,9 @@ def _reset_session_factory():
     yield
     from app.sessions import reset_session_factory
     reset_session_factory()
+
+
+@pytest.fixture(autouse=True)
+def _refused_log_in_tmp(tmp_path, monkeypatch):
+    """No test may append to the real refused-question log (ADR 0004)."""
+    monkeypatch.setenv("FINRAG_REFUSED_LOG", str(tmp_path / "refused_questions.log"))
