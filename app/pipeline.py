@@ -6,17 +6,11 @@ from app.extractor import (
 )
 from sqlalchemy.exc import IntegrityError
 
-from app.llm import call_llm_batch
-from app.embedder import build_embedded_text, generate_embedding
-from app.models import SessionLocal, Statement, Transaction
+from app import categorization, category_store
+from app.categories import SECTION_CATEGORY_KEYS
+from app.models import Statement, Transaction
+from app.sessions import new_session
 from app.statement import DuplicateStatement, StatementData, StatementRejected, validate
-
-
-# Rows in these sections get a fixed category at insert (ADR 0003, decision 2b),
-# in the same insert, so an enrichment failure can never leave them as the
-# column default "Other". PR2 makes enrich_transactions skip them; until then
-# nothing calls persist_statement.
-FIXED_CATEGORIES = {"fees": "Fees", "interest": "Interest"}
 
 PERIOD_CONSTRAINT = "uq_statement_period"
 
@@ -48,9 +42,14 @@ def persist_statement(data: StatementData, filename: str) -> dict:
     if mismatches:
         raise StatementRejected(mismatches)
 
-    db = SessionLocal()
+    db = new_session()
     try:
+        # Uploads bump data_version, so a preview taken before this upload is stale.
+        categorization.lock_version(db)
         _raise_if_duplicate(db, data.period_start, data.period_end)
+        names = category_store.names_by_id(db)
+        section_ids = {section: category_store.system_category_id(db, key)
+                       for section, key in SECTION_CATEGORY_KEYS.items()}
 
         statement = Statement(
             filename=filename,
@@ -75,11 +74,18 @@ def persist_statement(data: StatementData, filename: str) -> dict:
                 # A 0.00 row (printed zero interest) counts as a charge.
                 is_credit="true" if row.amount > 0 else "false",
                 section=row.section,
+                # Fee and interest rows are labelled by their section (ADR 0003,
+                # 2b; ADR 0005). Everything else starts pending for enrichment.
+                category_id=section_ids.get(row.section),
+                category_source="section" if row.section in section_ids else "pending",
+                merchant_source="section" if row.section in section_ids else "pending",
             )
-            if row.section in FIXED_CATEGORIES:
-                tx.category = FIXED_CATEGORIES[row.section]
+            tx.category = names.get(tx.category_id)
             db.add(tx)
+            db.flush()
+            categorization.open_history(db, tx, None)
 
+        categorization.bump_version(db)
         db.commit()
 
         return {
@@ -111,7 +117,7 @@ def extract_from_pdf(filepath: str, filename: str) -> dict:
     pages = extract_raw_text(filepath)
     period_start, period_end = parse_statement_period(pages)
 
-    db = SessionLocal()
+    db = new_session()
 
     try:
         _raise_if_duplicate(db, period_start, period_end)
@@ -158,41 +164,10 @@ def extract_from_pdf(filepath: str, filename: str) -> dict:
 
 
 def enrich_transactions(statement_id: int) -> dict:
-    db = SessionLocal()
-
+    """Label the statement's pending rows before /upload replies (ADR 0005 fixes,
+    upload option A). Model failures stay pending and are retried later."""
+    db = new_session()
     try:
-        db_transactions = db.query(Transaction).filter_by(statement_id=statement_id).all()
-
-        tx_dicts = []
-        for tx in db_transactions:
-            tx_dicts.append({"id": tx.id, "raw_description": tx.raw_description})
-
-        results, missed_ids = call_llm_batch(tx_dicts)
-
-        result_map = {r["id"]: r for r in results}
-        for tx in db_transactions:
-            if tx.id in result_map:
-                tx.merchant = result_map[tx.id]["merchant"]
-                tx.category = result_map[tx.id]["category"]
-
-        for tid in missed_ids:
-            tx = next(t for t in db_transactions if t.id == tid)
-            tx.needs_review = True
-
-        for tx in db_transactions:
-            tx.embedded_text = build_embedded_text(tx)
-            tx.embedding     = generate_embedding(tx.embedded_text)
-
-        db.commit()
-
-        return {
-            "enriched":     len(results),
-            "needs_review": sum(1 for tx in db_transactions if tx.needs_review),
-        }
-
-    except Exception:
-        db.rollback()
-        raise
-
+        return categorization.enrich_pending(db, statement_id=statement_id)
     finally:
         db.close()

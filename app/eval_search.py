@@ -81,7 +81,7 @@ for tc in TEST_CASES:
         match = any(e.lower() in tx.merchant.lower() or tx.merchant.lower() in e.lower()
                     for e in tc["expected"])
         flag  = "✓" if match else "✗"
-        print(f"{tx.merchant:35s}  {tx.category:25s}  {dist:>8.3f}  {flag}")
+        print(f"{tx.merchant:35s}  {(tx.category or 'pending'):25s}  {dist:>8.3f}  {flag}")
 
     returned_merchants = [tx.merchant for tx in results]
     for expected in tc["expected"]:

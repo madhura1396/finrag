@@ -34,7 +34,7 @@ Branch: `feat/statement-validation`
 
 | File | Change |
 |---|---|
-| `migrations/0001_add_transaction_section.sql` (new) | `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS section TEXT NULL;` `IF NOT EXISTS` is there because on a fresh database `create_tables()` already creates the column. The undo line goes in a comment. It stays nullable until the data step. |
+| `migrations/0001_add_transaction_section.sql` (new) | `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS section TEXT NULL;` `IF NOT EXISTS` is there because on a fresh database `create_tables()` already creates the column. The undo line goes in a comment. It is superseded by the categories PR's reset, which creates `section` as `NOT NULL`. |
 | `app/statement.py` (new) | `StatementData`, `Row`, `SummaryLine`, `Mismatch` dataclasses, the `CHECKS` constant (every check name, below), `validate(data) -> list[Mismatch]`, and exceptions `StatementRejected` (carries mismatches) and `DuplicateStatement`. No PDF, profile, bank or database code, and no import of `app.models`. |
 | `app/pipeline.py` | Raise `DuplicateStatement`, not `ValueError`, for an existing period. Add `persist_statement(data: StatementData, filename: str) -> dict`. It validates, then inserts the statement (with `filename`, because `app/models.py:32` is `nullable=False`) and its rows in one transaction, and returns `{"statement_id", "period_start", "period_end", "total_transactions"}`, the shape `app/main.py:35-38` already uses. Each row stores `section` and its signed `amount`. `is_credit` is derived from the sign (`'true'` if `amount > 0`, else `'false'`, so a 0.00 row is a charge) and kept as text, because `app/query_router.py:20,129` depends on it (ADR 0003, decision 8). Rows in sections `fees`/`interest` get their final merchant (printed description) and category (`Fees`/`Interest`) here, in the same insert, so an enrichment failure can never leave them as `Other`. Not called by upload yet. |
 | `app/main.py` | Replace the blanket `except ValueError` (`app/main.py:29-30`): `DuplicateStatement` gives 409, `StatementRejected` gives 422. Anything else is a bug and stays a 500. |
@@ -129,10 +129,10 @@ Branch: `feat/user-owned-categories`. **Merges after PR1 and before the read-pat
 - Every change is previewed, token-checked, logged, versioned (SCD2) and undoable in reverse order.
 - Categories are an SCD2 dimension with durable IDs.
 
-**Database reset.** After merge, the user runs `python -m scripts.reset_db --database-url <finrag URL> --yes`, or asks Claude to run it.
+**Database reset.** After merge, the user runs `python -m scripts.reset_db --env production --yes --confirm-name finrag --allow-production`, or asks Claude to run it. (`--allow-production` is needed once, because today's dummy `finrag` holds statements and has no marker yet.)
 - It drops all tables and recreates them through `app/db_setup.py` on that explicit target, never the import-time engine: `section NOT NULL`, the ADR 0005 tables and constraints, then the seed.
 - It prints the target before acting and refuses without `--yes`.
-- It **refuses if the target has any `statements` row**, unless given `--destroy-real-data` and the database name typed back at a prompt. So it is safe now (dummy data) and refuses by default after the data step.
+- It refuses a target marked `production`, or an unmarked one holding statements, unless given `--allow-production`. It requires `--yes` and `--confirm-name` equal to the database name, never re-marks a database, uses `DATABASE_URL` loaded in its own process (or `--database-url`), and prints only database, host and port. After this reset `finrag` is marked `production`, so a later reset refuses by default (ADR 0005, Implementation decisions A).
 - `uploads/` is not touched.
 - From then until PR2, the legacy upload path (which writes no `section`) fails loudly with a 500. Uploads are paused anyway (ADR 0003, decision 3), and the database stays empty.
 
@@ -140,7 +140,9 @@ Branch: `feat/user-owned-categories`. **Merges after PR1 and before the read-pat
 
 | File | Change |
 |---|---|
-| `scripts/reset_db.py` (new) | Explicit `--database-url`, `--yes`, the data-keyed guard above; calls `db_setup`; reports table counts. |
+| `scripts/reset_db.py` (new) | The marker-keyed guard above; calls `db_setup`. |
+| `app/db_guard.py` (new) | The environment-marker check on every engine's `connect` event, comparing with `FINRAG_ENV`. |
+| `app/sessions.py` (new) | The write-path session factory (`new_session`, `set_session_factory`, `reset_session_factory`) and FastAPI's `get_session`. |
 | `app/db_setup.py` (new) | `create_tables(engine)`, moved from `app/models.py:100` (the pgvector extension, then `Base.metadata.create_all`), and `seed(session)`: when `category_ids` is empty, insert the system categories (fixed IDs), the defaults and the single `data_version` row; otherwise do nothing. Imports `models` and `categories`. |
 | `app/categories.py` (new) | The seed data only: default names, and the system categories `Fees`, `Interest` and `Other` with fixed IDs. |
 | `app/models.py` | Models for every ADR 0005 table: `category_ids`, `category_versions`, `category_rules`, `label_memory` (per-field sources), `transaction_label_history`, `change_log`, `review_items` and `data_version`. Also every ADR 0005 constraint (the partial unique indexes, including the non-archived-name index; the `pending` check constraint), and the new `transactions` columns (`category_id`, per-field source and rule ID; no pinned flags). `section` becomes `nullable=False`. **Transitional:** `transactions.category` (text) becomes nullable with no default, NULL while `pending`, and is dropped by the read-path PR. `create_tables` is removed from here. |
@@ -163,7 +165,7 @@ Branch: `feat/user-owned-categories`. **Merges after PR1 and before the read-pat
 **Unit tests (no Ollama, no Postgres).** Invented descriptors only.
 - **Normalisation:** `GROCER MART #101 SPRINGFIELD` and `GROCER MART #202 SPRINGFIELD` share a key; an all-digit description falls back to a non-empty key.
 - **`db_setup`:** the seed on an empty database creates the system categories, the defaults and the `data_version` row; a second `seed` after a default was renamed or archived does **not** resurrect it.
-- **`reset_db`:** refuses without `--yes`; refuses when `statements` has rows unless given `--destroy-real-data` plus the typed name; never touches the import-time engine (asserted by patching it to fail).
+- **`reset_db`:** refuses without `--yes`, with a wrong `--confirm-name`, on a `production` marker or an unmarked database holding statements (without `--allow-production`), and when re-marking; never touches the import-time engine (asserted by patching it to fail).
 - **Rules:** contains and regex; an invalid regex and nested repetition refused; the length cap; the highest priority wins per field; an equal-priority conflict refused at creation and flagged at ingest (the field falls through, `needs_review`).
 - **Precedence per field:** section beats pin beats rule beats memory beats model. A merchant-only pin does not freeze the category. Rules never change pinned fields or section rows.
 - **The model** is mocked:
@@ -181,14 +183,14 @@ Branch: `feat/user-owned-categories`. **Merges after PR1 and before the read-pat
   - refused when a later change touched the same rows, rules, memory or category, listing the blockers,
   - rows ingested after the change follow the current rules.
 - **Rename:** no transaction labels change (only the transitional text copy); a new version opens; point-in-time shows the old name for old dates; the embedded text goes stale.
-- **Merge:** rows, rules, memory and category pins are re-pointed; the source gets an open archived version and its name becomes reusable; an archived target is refused. Delete merges into `Other`. System categories are refused for rename, merge, delete and as targets; pins on section rows are refused.
+- **Merge:** rows, rules, memory and category pins are re-pointed; the source gets an open archived version and its name becomes reusable; an archived target is refused. Delete with `into` merges; delete without it withdraws the category (rules retired or reduced to their merchant part, memory forgotten, pins dropped) and its rows go `pending` for the model; an explicit move into `Other` is refused. System categories are refused for rename, merge, delete and as targets; pins on section rows are refused.
 - **The stale-embedding check** (`embedding_text.is_stale`) detects a relabel, a rename and a pending row being labelled. `build_embedded_text` takes the name and does no database access.
 - **Review items:** `none_fit` stores the suggestion; a conflict stores the rule IDs; a `pending` row gets one; resolution records the change ID.
 - **The loopback middleware:** a request from a non-loopback client gets 403.
 - **Endpoints:** shapes, preview-then-apply, and 409s.
 
 **Integration tests (`finrag_test`)**
-- `create_tables(engine)` and the seed on an empty `finrag_test`; `reset_db --database-url <finrag_test>` end to end.
+- `create_tables(engine, "test")` and the seed on an empty `finrag_test`; `reset_db --database-url <finrag_test> --env test --confirm-name finrag_test --yes` end to end, with the password never printed.
 - The constraints: a second open version per category or per transaction, a duplicate memory key, a duplicate current non-archived name (case-insensitive) and a null `category_id` with a non-`pending` source are each rejected **by the database**. An archived name can be reused.
 - Current columns equal open history after ingest, apply, undo, rename and merge.
 - `SELECT … FOR UPDATE` serialises two concurrent applies (one gets 409), and an apply against a concurrent enrichment write.
@@ -228,8 +230,8 @@ Branch: `feat/code-owned-read-path`. **Merges before PR2**, which is the first c
 | `evals/read_path/run.py` (new) | Manual eval with Ollama up. Reports accuracy overall, per type and per field, plus the rewrite-rejection rate. |
 | `app/eval_search.py` | Use the search cutoff and cap from `read_settings.py` instead of its hardcoded threshold 1.0 and limit 10, and run only under `if __name__ == "__main__"` rather than on import. That makes it the cap-50 search eval. |
 | `tests/unit/test_calculations.py`, `test_question_form.py`, `test_answers.py`, `test_query_api.py` (new) | Unit tests, below. |
-| `tests/integration/test_read_queries.py`, `tests/integration/conftest.py` (new) | Integration suite, below. |
-| `.claude/CLAUDE.md` | Layout: the new modules and `evals/`. Read path: `main.py -> query_router.py -> question_form.py, read_queries.py, calculations.py, answers.py, embedder.py, category_store.py, read_settings.py -> models.py`. Data safety: "never read the refused-question log". (The integration suite rule and carve-out were added by the categories PR.) |
+| `tests/integration/test_read_queries.py` (new) | Integration suite, below, using the conftest from the categories PR. |
+| `.claude/CLAUDE.md` | Layout: the new modules and `evals/`. Read path: `main.py -> query_router.py -> question_form.py, read_queries.py, calculations.py, answers.py, embedder.py, embedding_text.py, category_store.py, read_settings.py -> models.py`. Data safety: "never read the refused-question log". (The integration suite rule and carve-out were added by the categories PR.) |
 
 **Unit tests (no Ollama, no Postgres; the LLM is mocked)**
 - **`calculations`:**

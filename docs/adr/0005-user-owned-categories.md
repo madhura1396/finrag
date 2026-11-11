@@ -134,7 +134,8 @@ Declined:
 - **3c. Model labels are final** (no confirmation step).
   - **Only real categories are remembered.** `none_fit` and model failures are **never** written to memory.
   - A `none_fit` row gets `Other`, source `none_fit`, `needs_review`, and a `none_fit` review item holding the suggestion. The next row with that key is asked again, and is flagged again if still `none_fit`.
-  - **Model unavailable or invalid output:** the row stays `pending` (no category, `needs_review`, a `pending` review item).
+  - **Model unavailable or invalid output:** the row stays `pending` (no category, `needs_review`, a `pending` review item). Pins, rules and memory still resolve without the model; only fields nothing else decides stay pending. A row counts as pending if either field is.
+  - Rows are inserted `pending` without a review item; one is opened only if enrichment leaves a field pending.
   - **Retrying `pending`:** a background enrichment pass runs after each upload, after each apply, and at app startup. `POST /enrichment/retry` runs it on demand. FastAPI background tasks are lost on restart, which is why startup and the endpoint exist.
   - The read path reports `pending` and `needs_review` counts (ADR 0004 notes). A missing label is never silently counted as `Other`.
   - **Accepted risk:** a wrong *remembered* label repeats until corrected. Memory makes labels consistent, not correct.
@@ -146,12 +147,15 @@ Declined:
 **API endpoints**, thin handlers over `app/categorization.py`.
 
 - **Endpoints:**
-  - categories: list, preview and create, preview and rename, preview and merge, preview and delete;
-  - review: `none_fit`, `pending` and conflict rows, grouped by key, with suggestions;
-  - rules: list, preview and create, preview and edit, preview and delete;
-  - pins: set or remove, per field, on one row;
-  - memory: list, preview and correct;
-  - the change log: list, preview and undo;
+  - reads: `GET /categories`, `GET /rules`, `GET /memory`, `GET /review` (`none_fit`, `pending` and conflict rows, grouped by key, with suggestions), `GET /changes`;
+  - every change goes through one pair, `POST /changes/preview` and `POST /changes/apply`, with a `kind`:
+    - categories: `create_category`, `rename_category`, `merge_category`, `delete_category`,
+    - rules: `create_rule`, `edit_rule`, `delete_rule`,
+    - memory: `set_memory`,
+    - pins: `pin`, `unpin` (per field, one row; no token needed),
+    - undo: `undo`.
+
+    One pair rather than one route per resource keeps the preview, token, lock and log logic in one place;
   - `POST /embeddings/refresh` and `POST /enrichment/retry`.
 - **Preview, then apply.** Any change that can relabel more than one row is two calls.
   - The preview returns the effect: rows that would change, how many fall through to memory or the model (decision 5), and example descriptions. It also returns a token binding **the exact change payload** (a hash) and the **`data_version`** at preview time.
@@ -168,7 +172,7 @@ Declined: a command-line tool, or both CLI and endpoints.
 ### 5. Applying changes, history and undo
 
 - **5a. SCD Type 2 history of labels, with current values on `transactions`.**
-  - `transaction_label_history` has one row per version: `transaction_id`, `category_id`, `category_source`, `category_rule_id`, `category_pinned`, `merchant`, `merchant_source`, `merchant_rule_id`, `merchant_pinned`, `valid_from`, `valid_to` and `change_id` (nullable for ingest).
+  - `transaction_label_history` has one row per version: `transaction_id`, `category_id`, `category_source`, `category_rule_id`, `merchant`, `merchant_source`, `merchant_rule_id`, `valid_from`, `valid_to` and `change_id` (nullable for ingest).
   - It mirrors every label column on `transactions` exactly, so "current equals open history" is a strict equality, tested after every operation.
   - Applying a change closes affected open versions and opens new ones. History is **append-only**: closed versions are never reopened or edited.
   - **Point in time:** a row's labels on a date are the version valid on that date, and the category name is the category version valid on that date (decision 7).
@@ -210,13 +214,57 @@ For example, rules for the invented descriptors `MEGASTORE WHSE` and `MEGASTORE 
   - previewed and token-checked, with transaction history versions,
   - A's current version is closed and a new current version opens with `archived = true`,
   - an archived target is refused.
-- **Delete:** a merge into `Other` (or a chosen category), then archive. Nothing is hard-deleted.
+- **Delete:** with a chosen user category, a merge into it. Without one, the category's labels are withdrawn and its rows re-decided (Implementation decisions, D). Either way the category is archived; nothing is hard-deleted.
 - **System categories** `Fees`, `Interest` and `Other` cannot be renamed, merged, deleted, used as rule or pin targets, or offered to the model. Pins on section rows are refused.
 - Archived categories are never offered to the model, and cannot be targets of new rules or pins.
 
 Declined:
 - names as text with rename as a bulk update,
 - IDs without name history.
+
+## Implementation decisions (categories PR, 2026-11-11)
+
+Settled with the user while building, after the final review of this ADR.
+
+- **A. Write-path sessions: one process-wide factory, guarded by an in-database environment marker.** (Review M2; the user chose the factory, option B, with a guard.)
+  - `app/sessions.py` holds the factory (`new_session()`); the app never swaps it. Endpoints use FastAPI's `Depends(get_session)`; tests override the factory. An autouse fixture resets it after every test, even one that crashes.
+  - Every database has a one-row `db_environment` marker: `finrag` is `production`, `finrag_test` is `test`. Like Rails' stored environment, it travels with the data.
+  - Every engine's `connect` event (`app/db_guard.py`) compares the marker with `FINRAG_ENV` (default `production`; `tests/conftest.py` sets `test`). A mismatch or a missing marker refuses the connection, so a test that forgets to swap the factory fails loudly instead of writing to real data.
+  - Setup code (`db_setup`, `reset_db`) uses unguarded engines, because it is what writes the marker.
+  - Integration tests run each test inside a transaction that is rolled back afterwards.
+  - Declined: passing a session into every top-level function (option A). The user preferred the factory, given the guard.
+- **B. `/upload` waits for labelling** (option A). The reply keeps `enriched` and `needs_review` and adds `pending`. Embeddings are refreshed in the background afterwards. Declined: replying before the model runs (option B), until uploads feel slow or a UI can show progress.
+- **C. Smaller choices made in code:**
+  - the source columns are `NOT NULL` with value checks, so the pending check constraint cannot be bypassed by a NULL source;
+  - `merchant` stays `NOT NULL`: it holds the printed description until labelled, with `merchant_source = 'pending'`;
+  - section rows have `merchant_source = 'section'`;
+  - memory learned during an enrichment pass is applied only from the next pass, so rows sharing a key are all recorded as labelled by that one model call;
+  - the loopback middleware allows `127.0.0.1` and `::1`; tests present a loopback client;
+  - undoing a merge or rename after the old name was reused is refused with 422 (the name check), not a constraint error.
+
+- **D. Deleting a category without a target re-decides its rows** (user decision, after the code review found that "merge into `Other`" would also re-point rules and memory to `Other`, so future rows would land there silently):
+  - rules that only set the category are soft-deleted; rules that also set a merchant keep the merchant part,
+  - memory forgets the category (an entry that held nothing else is removed),
+  - pins on it are dropped,
+  - the category is archived, so it is never offered again, and any row still carrying it falls to `pending`,
+  - the background pass then labels those rows from the remaining categories: one batched pass per delete, about one model call per 15 distinct descriptions (unmeasured latency); rules and other memory apply first; `none_fit` goes to `Other` **with** a review item,
+  - undo restores the name, the rules, the memory entries and the pins from the change's before-snapshot.
+
+  Moving rows into `Other` explicitly is refused; `Other` is only the flagged `none_fit` fallback. Declined:
+  - moving every row to `Other` with a review flag (B: deterministic, but every row must be reviewed by hand),
+  - the literal merge into `Other` (C: silent `Other` for future rows).
+- **E. Code-review fixes (round 1, categories PR):**
+  - undo ignores changes already compensated by an undo, so reverse-order undo works to any depth;
+  - a change's category dependencies (rule targets, pin and memory categories) count as touched, and restorers refuse archived targets, so undo cannot leave a live pointer to an archived category;
+  - `resolve` never keeps a model, memory or `none_fit` label whose category is archived;
+  - a merchant that loses its rule or pin returns to the printed description;
+  - `pending` review items open only after the model has tried;
+  - enrichment bumps `data_version` only when it changed something;
+  - pins on section rows are refused for both fields;
+  - memory keys passed to `set_memory` are normalised;
+  - `/upload` is a plain `def` (a worker thread), so labelling never blocks other requests (issue #10), and a labelling failure after the save reports the rows as `pending` rather than a 500;
+  - `reset_db` requires `--env` and counts trips, rules and memory as data;
+  - the integration fixture reads the marker before dropping anything.
 
 ## Module boundaries
 
@@ -228,9 +276,9 @@ Declined:
   Imported by the read path, `embedder` callers, `llm.py` and `categorization.py`. It imports only `models`.
 - **`app/categorization.py`** (writes): precedence, memory, rule validation, preview tokens, apply, history, change log, undo, rename, merge and delete. Imported by `pipeline.py` and `main.py`, never by the read path.
 - **`app/embedder.py`** and **`app/embedding_text.py`** import neither. They receive names as arguments.
-- **`app/categories.py`:** the seed list only (names, plus the three system categories with fixed IDs).
+- **`app/categories.py`:** the seed list only: default names, plus the three system categories identified by a unique `system_key` (`fees`, `interest`, `other`) on `category_ids`, not by fixed numeric IDs, so seeding never fights the ID sequence.
 - **`app/db_setup.py`** (new): `create_tables(engine)` and `seed(session)`, imported by the reset script, the integration suite and the documented setup command. It imports `models` and `categories`; `models` imports neither, so there is no import cycle and the dependency direction stays "everything → `models.py`". `app.models.create_tables` (`app/models.py:100`) moves here.
-  - **Seed key:** the seed runs **only when `category_ids` is empty**. It inserts the system categories (fixed IDs), the default categories, and the single `data_version` row. On a seeded database it does nothing, so a renamed, merged or archived default is never resurrected.
+  - **Seed key:** the seed runs **only when `category_ids` is empty**. It inserts the system categories (by `system_key`), the default categories, and the single `data_version` row. On a seeded database it does nothing, so a renamed, merged or archived default is never resurrected.
   - **Explicit target:** every function takes the engine or session it acts on. Nothing in setup uses the import-time engine in `app/models.py:13`.
 
 ## Consequences
@@ -239,12 +287,13 @@ Declined:
 - **Hard constraint upheld:** a model failure or `none_fit` is never remembered, never silently counted as `Other`, and always flagged (`pending` or `needs_review`).
 - **Model-chosen labels are final.** A wrong remembered label repeats until corrected.
 - **Schema reset:** all tables are dropped and recreated with the new schema and seed. This is acceptable because the data is dummy (user, 2026-11-11). It is run by the user, or by Claude only when explicitly asked, per `.claude/CLAUDE.md` Data safety.
-  - **The reset guards itself by checking data, not dates:**
-    - it refuses if the target database has any `statements` row, unless given `--destroy-real-data` **and** the database name typed back at an interactive prompt,
-    - it requires `--yes`,
-    - it takes its target as an explicit `--database-url` (never the import-time engine), and prints it before acting.
+  - **The reset guards itself by the database's own environment marker** (Implementation decisions, A):
+    - it requires `--yes` and `--confirm-name` equal to the target's database name (an argument, not a prompt, so it also works when Claude runs it on request);
+    - it refuses a target marked `production`, or an unmarked one that holds statements, unless given `--allow-production`. Today's dummy `finrag` is unmarked and holds statements, so its one-time reset is `python -m scripts.reset_db --env production --yes --confirm-name finrag --allow-production`;
+    - it never re-marks a database (a `test` database cannot be reset as `production`, or the reverse);
+    - its target is `--database-url`, else `DATABASE_URL` loaded from `.env` by the script's own process. It never uses the import-time engine, and prints only database, host and port, never the password.
 
-    After the data step, rules, memory, pins and the change log exist only in the database and cannot be re-uploaded, so the script refuses by default from then on.
+    After the data step, rules, memory, pins and the change log exist only in the database and cannot be re-uploaded. `finrag` is then marked `production`, so the script refuses by default.
 - **Transitional column:** until the read-path PR, `transactions.category` (text, nullable, no default) stays as a derived copy of the current category name, NULL while `pending`, written in the same transaction as every label change and rename. The old `/query` code (`app/query_router.py:21-23, 330`), `app/eval_search.py:84` and `tests/unit/test_pipeline.py:86,90` keep compiling and running.
   - **In practice the window has no rows:** the reset empties the database, the legacy upload path fails on `section NOT NULL` (500), and `persist_statement` is not wired until PR2, which merges after the read-path PR. The sync is still built and tested so the invariant holds if that ordering changes.
   - The read-path PR drops the column.

@@ -52,26 +52,35 @@ Not architectural, so just do it inside the agreed task: naming, refactors insid
 
 ```
 app/            production code
-  main.py         FastAPI endpoints
-  pipeline.py     write path orchestration
-  statement.py    StatementData contract + validation (bank-agnostic, no DB)
-  extractor.py    PDF text + Wells Fargo state machine parser (being replaced)
-  llm.py          Ollama enrichment (merchant, category)
-  embedder.py     sentence-transformers embeddings
-  query_router.py read path: classify, SQL generation, semantic search, formatting
-  models.py       SQLAlchemy models, engine, sessions
-  eval_search.py  retrieval eval script (runs on import)
-  reembed.py      one-off re-embedding script
+  main.py           FastAPI endpoints; loopback-only middleware
+  pipeline.py       write path orchestration
+  statement.py      StatementData contract + validation (bank-agnostic, no DB)
+  extractor.py      PDF text + Wells Fargo state machine parser (being replaced)
+  categorization.py label precedence, rules, memory, preview/apply, history, undo (ADR 0005; writes)
+  category_store.py current category names, normaliser, description keys (read only)
+  categories.py     category seed data
+  db_setup.py       create_tables(engine, environment), seed(session)
+  db_guard.py       environment-marker guard on every connection
+  sessions.py       write-path session factory and FastAPI get_session
+  llm.py            Ollama labelling: temperature 0, schema-constrained, validated
+  embedding_text.py embedded text + stale check (no heavy imports)
+  embedder.py       sentence-transformers embeddings
+  query_router.py   read path: classify, SQL generation, semantic search, formatting
+  models.py         SQLAlchemy models, engine (guarded), SessionLocal
+  eval_search.py    retrieval eval script (runs on import)
+  reembed.py        re-embed stale rows
 docs/adr/       architecture decision records
 docs/plans/     implementation plans
-migrations/     numbered SQL scripts; I run them, in order
+migrations/     historical SQL; the schema is now rebuilt by scripts/reset_db.py (ADR 0005)
+scripts/        reset_db.py (guarded schema reset)
 profiles/       bank layout profiles, YAML
 experiments/    model-internals research, not part of the app
-tests/          unit/ = pytest suite; top-level test_*.py = manual scripts
+tests/          unit/ = pytest suite; integration/ = finrag_test suite; top-level test_*.py = manual scripts
 ```
 
 - `app/` must never import from `experiments/` or `tests/`.
-- Write path: `main.py` -> `pipeline.py` -> `extractor.py`, `statement.py`, `llm.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`.
+- Write path: `main.py` -> `pipeline.py` -> `extractor.py`, `statement.py`, `categorization.py` -> `category_store.py`, `llm.py`, `embedding_text.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`. The read path never imports `categorization.py`.
+- Setup: `scripts/reset_db.py` -> `db_setup.py` -> `models.py`, `categories.py`. `models.py` imports only `db_guard.py`.
 - Read path: `main.py` -> `query_router.py` -> `models.py`.
 
 ## Running locally
@@ -82,18 +91,21 @@ Prereqs: Postgres with pgvector, Ollama running with `llama3.2` pulled, Python v
 source .venv/bin/activate
 pip install -r requirements.txt
 # .env needs DATABASE_URL=postgresql://user:password@localhost:5432/finrag
-python -c "from app.models import create_tables; create_tables()"   # not called automatically
-psql "$DATABASE_URL" -f migrations/0001_add_transaction_section.sql # then every migrations/*.sql in order
-uvicorn app.main:app --reload
+python -m scripts.reset_db --env production --yes --confirm-name finrag   # fresh database: create, mark production, seed
+                                                                   # holds data or marked production: add --allow-production (destroys it)
+uvicorn app.main:app --reload                                      # binds 127.0.0.1; the API refuses non-loopback clients
 python demo.py                                                      # needs the server running
 ```
 
 - Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `extractor.py`, `llm.py` and `query_router.py`.
+- Every database carries an environment marker (`db_environment`): `finrag` is `production`, `finrag_test` is `test`. Connections compare it with `FINRAG_ENV` (default `production`) and refuse on a mismatch or a missing marker.
+- The label endpoints (`/changes/*`, `/categories`, `/rules`, `/memory`, `/review`, `/enrichment/retry`, `/embeddings/refresh`) write real data with no authentication. Never expose the API beyond this machine without an authentication decision first.
 - `experiments/` needs torch, transformers, matplotlib, seaborn and llama_cpp, which are not in `requirements.txt`.
 
 ## Tests
 
 - Unit tests: `pip install -r requirements-dev.txt`, then `python -m pytest` from the repo root. They live in `tests/unit/` and need no Ollama, Postgres or `.env` (`tests/conftest.py` disables `load_dotenv` and sets a dummy `DATABASE_URL`).
+- Integration tests (user-approved exception to the no-Postgres rule): `FINRAG_TEST_DATABASE_URL=<finrag_test URL> python -m pytest -m integration`. They live in `tests/integration/`, refuse any database not named `finrag_test`, connect with the environment guard (`FINRAG_ENV=test`), and roll back each test's transaction.
 - Manual scripts remain in `tests/` and are excluded from pytest: `python -m tests.test_extractor path/to/statement.pdf`. They need live Ollama and a real PDF.
 - New tests must not call Ollama or Postgres unless I ask for an integration test. Mock the HTTP calls.
 - Never commit real statements as test fixtures. Use synthetic statements.
@@ -109,7 +121,8 @@ python demo.py                                                      # needs the 
 ## Data safety
 
 - Never read `.env` or anything in `uploads/`. They hold credentials and real bank statements.
-- Never run SQL that writes to the database (INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER) unless I ask.
+- Never run SQL that writes to the database (INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER) unless I ask. Exception: the integration suite may write to `finrag_test` (never `finrag`), and `scripts/reset_db.py` may target `finrag_test` in tests. Running `reset_db` against `finrag` needs my explicit ask.
+- Rules, label memory, pins and the change log hold real merchant text and live only in the database. Never copy them into the repo, fixtures or docs.
 - Never paste real transaction data into commit messages, PRs, ADRs or docs.
 - To check profiles against my real statements, write a script that prints only pass/fail per file, plus on failure the failing check names and section keys (fixed words from code and the profile, never amounts, dates, merchants or other statement text; ADR 0003). I run it; you never read its input files.
 

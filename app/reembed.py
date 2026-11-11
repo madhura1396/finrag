@@ -1,31 +1,18 @@
 """
-Re-embed all transactions using the current build_embedded_text format.
+Re-embed every stale transaction (ADR 0005, decision 5b).
 Run from repo root: python -m app.reembed
 """
-from app.models import SessionLocal, Transaction
-from app.embedder import build_embedded_text, generate_embedding
+from app.categorization import refresh_embeddings
+from app.embedder import generate_embedding
+from app.sessions import new_session
 
 
-def reembed_all():
-    db = SessionLocal()
+def reembed_all() -> int:
+    db = new_session()
     try:
-        txs = db.query(Transaction).all()
-        total = len(txs)
-        print(f"Found {total} transactions to re-embed...")
-
-        for i, tx in enumerate(txs, 1):
-            tx.embedded_text = build_embedded_text(tx)
-            tx.embedding     = generate_embedding(tx.embedded_text)
-
-            if i % 10 == 0 or i == total:
-                print(f"  {i}/{total}  last: {tx.embedded_text!r}")
-
-        db.commit()
-        print(f"\nDone. {total} transactions re-embedded.")
-
-    except Exception as e:
-        db.rollback()
-        raise e
+        count = refresh_embeddings(db, generate_embedding)
+        print(f"Re-embedded {count} stale transactions.")
+        return count
     finally:
         db.close()
 
