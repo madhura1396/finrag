@@ -444,7 +444,7 @@ summary:
 
 The database was reset by the categories PR, so there is nothing to delete or convert.
 
-1. Run `python scripts/check_profiles.py <your statements>` (add `--numbered` if you will paste the output) and get `PASS` on every file. If any line says `FAIL`, paste the output so the profile can be fixed. Do not continue until every file passes.
+1. Run `python -m scripts.check_profiles <your statements>` (add `--numbered` if you will paste the output) and get `PASS` on every file. If any line says `FAIL`, paste the output so the profile can be fixed. Do not continue until every file passes.
 2. Optional: if anything you care about has been entered since the reset, back it up first: `pg_dump -Fc finrag > finrag_backup.dump`, kept outside the repo.
 3. Make sure Ollama is running with `llama3.2`. Enrichment failures leave rows `pending`, retried in the background (ADR 0005), so they do not block uploads.
 4. Upload every statement through `/upload`.

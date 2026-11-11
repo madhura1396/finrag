@@ -55,7 +55,9 @@ app/            production code
   main.py           FastAPI endpoints; loopback-only middleware
   pipeline.py       write path orchestration
   statement.py      StatementData contract + validation (bank-agnostic, no DB)
-  extractor.py      PDF text + Wells Fargo state machine parser (being replaced)
+  extractor.py      legacy Wells Fargo parser; unused, deleted in PR3
+  profile.py        strict loader for profiles/*.yaml (the only home of bank strings)
+  reader.py         PDF -> StatementData by word positions, driven by the profile
   categorization.py label precedence, rules, memory, preview/apply, history, undo (ADR 0005; writes)
   category_store.py current category names, normaliser, description keys (read only)
   categories.py     category seed data
@@ -78,7 +80,7 @@ app/            production code
 docs/adr/       architecture decision records
 docs/plans/     implementation plans
 migrations/     historical SQL; the schema is now rebuilt by scripts/reset_db.py (ADR 0005)
-scripts/        reset_db.py (guarded schema reset)
+scripts/        reset_db.py (guarded schema reset); check_profiles.py (pass/fail on your real statements)
 profiles/       bank layout profiles, YAML
 experiments/    model-internals research, not part of the app
 evals/          read_path/ form eval (synthetic questions; needs Ollama); search_eval.example.yaml
@@ -86,7 +88,7 @@ tests/          unit/ = pytest suite; integration/ = finrag_test suite; top-leve
 ```
 
 - `app/` must never import from `experiments/` or `tests/`.
-- Write path: `main.py` -> `pipeline.py` -> `extractor.py`, `statement.py`, `categorization.py` -> `category_store.py`, `llm.py`, `embedding_text.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`. The read path never imports `categorization.py`.
+- Write path: `main.py` -> `pipeline.py` -> `profile.py`, `reader.py`, `statement.py`, `categorization.py` -> `category_store.py`, `llm.py`, `embedding_text.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`. The read path never imports `categorization.py`.
 - Setup: `scripts/reset_db.py` -> `db_setup.py` -> `models.py`, `categories.py`. `models.py` imports only `db_guard.py`.
 - Read path: `main.py` -> `query_router.py` -> `question_form.py`, `read_queries.py`, `calculations.py`, `answers.py`, `embedder.py`, `embedding_text.py`, `category_store.py`, `read_settings.py` -> `models.py`. The read path never imports `categorization.py` or `llm.py`.
 

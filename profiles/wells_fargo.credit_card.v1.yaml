@@ -1,0 +1,44 @@
+# Wells Fargo credit card statement layout (ADR 0002, 0003). Layout facts only;
+# no transaction data. The strings come from the user's statement (ADR 0003
+# Context). Every bank-specific string lives here, never in app/.
+profile: wells_fargo.credit_card
+version: 1
+
+period:
+  pattern: 'Statement Period (\d{2}/\d{2}/\d{4}) to (\d{2}/\d{2}/\d{4})'
+  date_format: '%m/%d/%Y'
+
+table:
+  header: ['Card Ending in', 'Trans Date', 'Post Date', 'Reference Number', 'Description', 'Credits', 'Charges']
+  columns:
+    trans_date: 'Trans Date'
+    post_date: 'Post Date'
+    description: 'Description'
+    credit: 'Credits'
+    debit: 'Charges'
+  y_tolerance: 3.0          # points; tuned on synthetic fixtures, unverified on real statements
+
+sections:
+  - {key: payments,      heading: 'Payments',                                     total: '^TOTAL PAYMENTS FOR THIS PERIOD'}
+  - {key: other_credits, heading: 'Other Credits',                                total: '^TOTAL OTHER CREDITS FOR THIS PERIOD'}
+  - {key: purchases,     heading: 'Purchases, Balance Transfers & Other Charges', total: '^TOTAL PURCHASES, BALANCE TRANSFERS & OTHER CHARGES FOR THIS PERIOD'}
+  - {key: fees,          heading: 'Fees Charged',                                 total: '^TOTAL FEES CHARGED FOR THIS PERIOD'}
+  - {key: interest,      heading: 'Interest Charged',                             total: '^TOTAL INTEREST CHARGED FOR THIS PERIOD'}
+
+# Rows in these sections may print no date; they get the statement's closing date
+# (ADR 0003, 4a). Fees: unverified, no fee rows seen on a real statement yet.
+undated_rows: [interest, fees]
+
+summary:
+  start_label: 'Previous Balance'
+  end_label: 'New Balance'
+  right_column_anchor: 'Total Credit Limit'
+  lines:
+    previous_balance: {label: 'Previous Balance', sign: 1}
+    payments:         {label: 'Payments', sign: -1, section: payments}
+    other_credits:    {label: 'Other Credits', sign: -1, section: other_credits}
+    cash_advances:    {label: 'Cash Advances', sign: 1, section: cash_advances}
+    purchases:        {label: 'Purchases, Balance Transfers & Other Charges', sign: 1, section: purchases}
+    fees:             {label: 'Fees Charged', sign: 1, section: fees}
+    interest:         {label: 'Interest Charged', sign: 1, section: interest}
+    new_balance:      {label: 'New Balance', sign: 0}
