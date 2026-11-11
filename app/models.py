@@ -60,11 +60,19 @@ class Transaction(Base):
     # Numeric(10,2) = up to 10 digits total, 2 decimal places. Right type for money.
     # Never use Float for money — floating point errors cause $19.999999 instead of $20.00
     amount = Column(Numeric(10, 2), nullable=False)
-    # Negative amount = credit/refund, positive = charge
+    # Signed (ADR 0003, 5a): positive = payment, refund or credit; negative =
+    # charge, fee or interest. Rows stored before the re-ingest are all positive
+    # and rely on is_credit for direction until they are deleted (decision 6).
+    # is_credit is derived from the sign for new rows; kept for the SQL prompt.
     is_credit = Column(String, nullable=False, default="false")
 
     # Auto-assigned by LLM on upload
     category = Column(String, nullable=False, default="Other")
+
+    # Statement section the row was printed under, one of app.statement.SECTIONS.
+    # Nullable only until legacy rows are deleted and re-ingested (ADR 0003,
+    # decisions 5c and 6); migrations/0003 then makes it NOT NULL.
+    section = Column(String, nullable=True)
 
     # True if LLM could not confidently clean merchant or assign category.
     # Set when: batch LLM call missed this transaction, or retry also failed.
