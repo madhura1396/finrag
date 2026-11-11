@@ -107,7 +107,7 @@ python demo.py                                                      # needs the 
 - Never read `.env` or anything in `uploads/`. They hold credentials and real bank statements.
 - Never run SQL that writes to the database (INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER) unless I ask.
 - Never paste real transaction data into commit messages, PRs, ADRs or docs.
-- To check profiles against my real statements, write a script that prints only pass/fail per file. I run it; you never read its input files.
+- To check profiles against my real statements, write a script that prints only pass/fail per file, plus on failure the failing check names and section keys (fixed words from code and the profile, never amounts, dates, merchants or other statement text; ADR 0003). I run it; you never read its input files.
 
 ## Working style
 
