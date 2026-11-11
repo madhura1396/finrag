@@ -110,11 +110,13 @@ class Answer:
 
 
 def _scope(form: Form) -> str:
+    """Every filter that was applied, so a fact never claims a wider scope than computed."""
+    scope = ""
     if form.category:
-        return f" on {form.category}"
+        scope += f" on {form.category}"
     if form.merchants:
-        return f" at {', '.join(form.merchants)}"
-    return ""
+        scope += f" at {', '.join(form.merchants)}"
+    return scope
 
 
 def _when(r: Range) -> str:
@@ -250,10 +252,18 @@ def check_rewrite(text: str, token_count: int) -> bool:
     tokens = [TOKEN.format(i + 1) for i in range(token_count)]
     if any(text.count(t) != 1 for t in tokens):
         return False
+    # In order: later facts refer back to earlier ones ("that came from 14 charges"),
+    # so reordering could attach a fact to the wrong figure.
+    positions = [text.index(t) for t in tokens]
+    if positions != sorted(positions):
+        return False
     glue = text
     for t in tokens:
         glue = glue.replace(t, " ")
     if re.search(r"\[F\d+\]", glue) or re.search(r"\d", glue):
+        return False
+    # Glue may only be plain ASCII words and ordinary punctuation: no symbols such as ×, ½ or %.
+    if re.search(r"[^A-Za-z\s.,:;!'’\-]", glue):
         return False
     lowered = glue.lower().replace("’", "'")
     if "n't" in lowered:
@@ -264,7 +274,8 @@ def check_rewrite(text: str, token_count: int) -> bool:
 def rewrite_prompt(question_type: str, token_count: int) -> str:
     tokens = ", ".join(TOKEN.format(i + 1) for i in range(token_count))
     example = ", and ".join(TOKEN.format(i + 1) for i in range(token_count))
-    return (f"You are joining hidden clauses into one friendly sentence. The placeholders {tokens} each stand "
+    return (f"You are answering a '{TYPE_WORDS[question_type]}' question by joining hidden clauses into one "
+            f"friendly sentence. The placeholders {tokens} each stand "
             "for a complete clause that already has its own subject, verb, amounts and dates, for example "
             "'you bought something'. You cannot see them, so do not describe or guess their content. "
             "Use each placeholder exactly once, unchanged, in order, connected only by short neutral words such "

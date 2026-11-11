@@ -417,6 +417,7 @@ def calc_savings(form: Form, rows, periods) -> Result | Refusal:
 def calc_search(form: Form, matches: list[RowView]) -> Result:
     """Category, merchant, date and direction were applied in SQL before the cap
     (read_queries.search), so every match here counts."""
+    assert rs.SEARCH_CAP <= rs.LIST_CAP, "search cap must not exceed the list cap"
     return Result("search", {"count": len(matches), "total": total(matches, form.direction),
                              "direction": form.direction, "capped": len(matches) >= rs.SEARCH_CAP},
                   rows=matches[:rs.LIST_CAP])

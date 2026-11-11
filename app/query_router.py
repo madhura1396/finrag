@@ -155,7 +155,7 @@ def route(question: str, session: Session, today: date | None = None, ask=ask_mo
     understood = answers.understood_as(form, result.coverage, span)
     period_cov = result.coverage.get("period")
     found_nothing = not result.rows and not result.table and not result.facts.get("count") \
-        and not result.facts.get("rows_total")
+        and not result.facts.get("rows_total") and not result.facts.get("refund_count")
     # Coverage "none" is not the same as no rows: a row dated just before its
     # statement starts still counts (ADR 0002, 4). Only say "No data" when
     # nothing was found; otherwise answer and let the interpretation line state coverage.

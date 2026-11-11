@@ -71,6 +71,7 @@ app/            production code
   calculations.py   every read-path number, pure Python over Decimal
   answers.py        exact answers, the "Understood as" line, the checked placeholder rewrite
   read_settings.py  read-path thresholds, timeouts, glue-word list, refused-question log path
+  read_types.py     plain read-path data types (Range, Form, Refusal, Trip); no I/O imports
   models.py         SQLAlchemy models, engine (guarded), SessionLocal
   eval_search.py    search eval; cases from ~/.finrag/search_eval.yaml (outside the repo)
   reembed.py        re-embed stale rows

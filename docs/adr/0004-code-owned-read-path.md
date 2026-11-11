@@ -184,7 +184,7 @@ Template first, then a **placeholder rewrite**. The model arranges code-written 
 1. Code renders each fact as one complete phrase behind an opaque token, **including its verb and direction**. For example, `[F1]` = "you spent $300.00 on Groceries", `[F2]` = "Dining came to $200.00, down $40.00 from November", `[F3]` = "you got $30.00 back in refunds". Code also writes a default sentence from the same tokens: that is `answer_exact`.
 2. llama3.2 receives only the tokens (never their contents) and the question type. It writes a natural sentence using each token exactly once.
 3. Code checks the result deterministically:
-   - every token appears exactly once (any order),
+   - every token appears exactly once, in order (later facts refer back to earlier ones, so reordering could attach a fact to the wrong figure),
    - no digits outside tokens,
    - outside tokens, no word from a **closed, enumerated list** kept in `app/read_settings.py`. Every word on it is a test case. It covers:
      - comparison and ranking words (more, less, fewer, up, down, higher, lower, most, least, biggest, smallest, top, bottom),
@@ -382,3 +382,12 @@ A script, run by hand with Ollama up, not a unit test. It sends each eval questi
   - **A stated year is never rolled back.**
   - **The closed glue-word list grew** by rate words (per, each, every, daily, weekly, monthly, average, …), negation and doubt (cannot, neither, nor, hardly, …), conditionals and hedges (if, unless, maybe, might, would, …) and judgement words (good, bad, great, nice, well, …). The rewrite prompt no longer suggests "Good news" or "while".
   - **Re-run eval:** form accuracy 31/79 (39.2%), rewrites 50/50, unchanged.
+- **Final review of #22 (fixed):**
+  - a fact states every applied filter ("on Groceries at Costco");
+  - a yearless range never spans more than a year, including ranges touching 29 Feb in or after a leap year;
+  - years outside 1990-2100 are not understood;
+  - overlapping comparison periods are refused rather than double-counted;
+  - a refunds-only period is never reported as "No data";
+  - the rewrite prompt names the question type, tokens must stay in order, and the glue may contain only plain ASCII words and punctuation;
+  - the closed list adds or, instead, minus, plus, until, apart, lacking, supposedly, excluded, included;
+  - `app/read_types.py` holds the plain data types, with no I/O imports.

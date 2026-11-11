@@ -253,3 +253,31 @@ def test_a_second_period_without_a_first_is_not_understood():
 def test_this_year_compares_against_the_same_dates_last_year():
     form = resolve(type="compare", period="this_year")
     assert (form.period_2.start, form.period_2.end) == (date(2025, 1, 1), date(2025, 11, 11))
+
+
+# --- final review of #22 ----------------------------------------------------------------
+
+LEAP_DAY = date(2028, 2, 29)
+
+
+@pytest.mark.parametrize("today,text,start,end", [
+    (TODAY, "--02-29..--03-01", date(2024, 2, 29), date(2024, 3, 1)),
+    (TODAY, "--02-20..--02-29", date(2024, 2, 20), date(2024, 2, 29)),
+    (TODAY, "--03-01..--02-29", date(2023, 3, 1), date(2024, 2, 29)),
+    (LEAP_DAY, "--02-29..--03-01", date(2024, 2, 29), date(2024, 3, 1)),     # was a 3-year span
+    (LEAP_DAY, "--02-20..--02-29", date(2028, 2, 20), date(2028, 2, 29)),
+])
+def test_yearless_ranges_never_span_more_than_a_year(today, text, start, end):
+    r = qf.parse_period(text, today)
+    assert (r.start, r.end) == (start, end) and r.days <= 367
+
+
+@pytest.mark.parametrize("bad", ["0001-01", "1500", "2999-01-01..2999-02-01"])
+def test_implausible_years_are_not_understood(bad):
+    with pytest.raises(NotUnderstood):
+        qf.parse_period(bad, TODAY)
+
+
+def test_overlapping_comparison_periods_are_refused():
+    out = resolve(type="compare", period="2026", period_2="2026-03")
+    assert isinstance(out, Refusal) and "overlap" in out.reason

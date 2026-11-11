@@ -58,7 +58,7 @@ def test_table_answers_have_no_facts_to_rewrite():
 # --- the rewrite check -------------------------------------------------------------------
 
 def test_faithful_arrangement_is_accepted():
-    assert answers.check_rewrite("Here is your answer: [F2], and [F1].", 2)
+    assert answers.check_rewrite("Here is your answer: [F1], and [F2].", 2)
 
 
 @pytest.mark.parametrize("text", [
@@ -126,3 +126,26 @@ def test_search_singular_grammar_and_cap_caveat():
     capped = answers.render(form, Result("search", {"count": 50, "total": D("3"), "direction": "spent",
                                                     "capped": True}), None)
     assert f"Only the {rs.SEARCH_CAP} closest matches are counted" in capped.exact
+
+
+def test_scope_states_every_applied_filter():
+    form = Form(type="total_spent", category="Groceries", merchant_text="costco", merchants=("Costco",), period=NOV)
+    result = Result("total_spent", {"total": D("25.00"), "count": 1, "direction": "spent"})
+    assert answers.render(form, result, None).facts[0] == "you spent $25.00 on Groceries at Costco in Nov 2026"
+
+
+def test_tokens_must_stay_in_order():
+    assert answers.check_rewrite("Here is what I found: [F1], [F2], and [F3].", 3)
+    assert not answers.check_rewrite("[F3], [F2], and [F1].", 3)
+
+
+@pytest.mark.parametrize("text", [
+    "[F1] or [F2].", "[F1] instead of [F2].", "[F1] minus [F2].", "[F1] until [F2].",
+    "[F1] × [F2].", "[F1] and ½ [F2].", "[F1] and [F2] %.",
+])
+def test_alternatives_arithmetic_and_symbols_are_rejected(text):
+    assert not answers.check_rewrite(text, 2)
+
+
+def test_rewrite_prompt_names_the_question_type():
+    assert "comparison" in answers.rewrite_prompt("compare", 3)

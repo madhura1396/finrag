@@ -66,6 +66,8 @@ GLUE_BANNED_WORDS = frozenset({
     "estimated", "estimate",
     # judgement about a figure
     "good", "bad", "great", "nice", "luckily", "unfortunately", "sadly", "well",
+    # alternatives, arithmetic and limits (added in the final review of the read-path PR)
+    "or", "instead", "minus", "plus", "until", "apart", "lacking", "supposedly", "excluded", "included",
 })
 
 

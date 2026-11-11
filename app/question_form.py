@@ -181,10 +181,17 @@ def _recent(month: int, day: int, today: date) -> date:
     raise NotUnderstood(f"no recent {month:02d}-{day:02d}")
 
 
+# Statements and questions live in a plausible window; anything else is a misread,
+# and it keeps day-by-day coverage and "the same range before" arithmetic bounded.
+MIN_YEAR, MAX_YEAR = 1990, 2100
+
+
 def _date(year: int, month: int, day: int, text: str) -> date:
+    if not MIN_YEAR <= year <= MAX_YEAR:
+        raise NotUnderstood(f"year in {text!r} is outside {MIN_YEAR}-{MAX_YEAR}")
     try:
         return date(year, month, day)
-    except ValueError as e:          # includes year 0
+    except ValueError as e:
         raise NotUnderstood(f"bad date {text!r}") from e
 
 
@@ -242,9 +249,27 @@ def parse_period(text: str, today: date) -> Range:
     if ".." in text:
         first, _, second = text.partition("..")
         (start, start_has_year), (end, end_has_year) = _parse_day(first.strip(), today), _parse_day(second.strip(), today)
+        if end < start and not start_has_year:
+            # Each yearless end resolves independently; a wrapping range rolls the
+            # yearless start back a year (ADR 0004, 2a′). A year the user stated is never changed.
+            start = _recent(start.month, start.day, date(start.year - 1, 12, 31))
+            if end < start:
+                # A yearless end on 29 Feb resolves to the last leap year: place the
+                # yearless start in that year, or the one before if it wraps.
+                for year in (end.year, end.year - 1):
+                    try:
+                        candidate = date(year, start.month, start.day)
+                    except ValueError:
+                        continue
+                    if candidate <= end:
+                        start = candidate
+                        break
+        if end < start:
+            raise NotUnderstood(f"range {text!r} ends before it starts")
         if not start_has_year and not end_has_year and (end - start).days > 366:
-            # Both yearless but resolved years apart (29 Feb looks back to a leap
-            # year): the end belongs to the start's year, or the next one if it wraps.
+            # A yearless range never spans more than a year. A 29 Feb start can look
+            # back to a leap year several years ago (directly, or through the
+            # rollback above): the end belongs to the start's year, or the next one.
             for year in (start.year, start.year + 1):
                 try:
                     candidate = date(year, end.month, end.day)
@@ -253,12 +278,10 @@ def parse_period(text: str, today: date) -> Range:
                 if candidate >= start:
                     end = candidate
                     break
-        if end < start and not start_has_year:
-            # Each yearless end resolves independently; a wrapping range rolls the
-            # yearless start back a year (ADR 0004, 2a′). A year the user stated is never changed.
-            start = _recent(start.month, start.day, date(start.year - 1, 12, 31))
-        if end < start:
-            raise NotUnderstood(f"range {text!r} ends before it starts")
+        if (end - start).days > 366 and not (start_has_year and end_has_year):
+            raise NotUnderstood(f"range {text!r} cannot be placed within a year")
+        if not (MIN_YEAR <= start.year and end.year <= MAX_YEAR):
+            raise NotUnderstood(f"range {text!r} is outside {MIN_YEAR}-{MAX_YEAR}")
         return Range(start, end, f"{start} to {end}")
     raise NotUnderstood(f"bad period {text!r}")
 
@@ -406,6 +429,9 @@ def resolve(raw: RawForm, ctx: DataContext) -> Form | Refusal:
                 return Refusal("data", "a comparison needs specific periods, not all data")
             if period_2 is None:
                 period_2 = _year_earlier(period) if raw.period in ("ytd", "this_year") else _before(period)
+            if period.start <= period_2.end and period_2.start <= period.end:
+                return Refusal("data", "the two periods overlap; compare periods that do not share days",
+                               {"period": period.label, "period_2": period_2.label})
     elif raw.type in MONTH_TYPES:
         if period is None:
             if not latest:

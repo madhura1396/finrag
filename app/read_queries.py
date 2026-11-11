@@ -1,7 +1,8 @@
 """The read path's only SQL (ADR 0004, "Testing the numbers"; ADR 0005 removed
 the legacy-row check). Thin and parameterised: rows are filtered by date
 here, and by direction, category and merchant in app/calculations.py. The
-one exception is search, which applies date and direction before its cap.
+one exception is search, which applies date, direction, category and merchant
+before its cap.
 Every function takes the session it reads with.
 """
 
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from app import category_store
 from app.calculations import RowView, direction_params
 from app.models import Statement, Transaction, Trip as TripModel
-from app.question_form import Trip
+from app.read_types import Trip
 
 _PRESENT = object()     # stands in for an embedding: only its presence matters downstream
 

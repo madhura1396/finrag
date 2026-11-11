@@ -133,3 +133,21 @@ def test_model_down_is_a_503(client, monkeypatch):
 
 def test_empty_question_is_a_400(client):
     assert client.post("/query", json={"question": "  "}).status_code == 400
+
+
+def test_rows_found_in_an_uncovered_period_are_still_answered(stubbed, monkeypatch):
+    # A row dated before its statement starts sits in a period no statement covers.
+    monkeypatch.setattr(read_queries, "fetch_rows", lambda s, start=None, end=None: [ROWS[0]])
+    monkeypatch.setattr(read_queries, "statement_periods", lambda s: [(date(2026, 11, 5), date(2026, 11, 30))])
+    out = route(RawForm(type="total_spent", period="2026-11-01..2026-11-04"))
+    assert not out["answer"].startswith("No data") and out["result"]["total"] == "40.00"
+    assert "no data for this period" in out["understood_as"]
+
+
+def test_refund_only_period_is_not_reported_as_no_data(stubbed, monkeypatch):
+    refund = RowView(9, date(2026, 11, 2), Decimal("25.00"), "other_credits", "Groceries", "model", "Grocer Mart",
+                     "GROCER MART", False, None, None)
+    monkeypatch.setattr(read_queries, "fetch_rows", lambda s, start=None, end=None: [refund])
+    monkeypatch.setattr(read_queries, "statement_periods", lambda s: [(date(2026, 11, 5), date(2026, 11, 30))])
+    out = route(RawForm(type="total_spent", period="2026-11-01..2026-11-04"))
+    assert not out["answer"].startswith("No data") and out["result"]["refunds"] == "25.00"
