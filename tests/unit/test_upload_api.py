@@ -18,10 +18,12 @@ from app.statement import DuplicateStatement, Mismatch, StatementRejected
 @pytest.fixture
 def client(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "UPLOAD_DIR", str(tmp_path))
-    monkeypatch.setattr(main, "enrich_transactions", lambda sid: {"enriched": 2, "needs_review": 0})
+    monkeypatch.setattr(main, "enrich_transactions", lambda sid: {"enriched": 2, "needs_review": 0, "pending": 0})
+    monkeypatch.setattr(main, "run_maintenance", lambda: None)
     # raise_server_exceptions=False so an unmapped exception shows up as the 500 a
     # real client would get, instead of being re-raised into the test.
-    return TestClient(main.app, raise_server_exceptions=False)
+    # The API is loopback-only (ADR 0005); present as a local client.
+    return TestClient(main.app, raise_server_exceptions=False, client=("127.0.0.1", 50000))
 
 
 def upload(client, name="synthetic.pdf"):
@@ -79,6 +81,7 @@ def test_success_returns_statement_summary(client, monkeypatch):
         "total_transactions": 5,
         "enriched":           2,
         "needs_review":       0,
+        "pending":            0,
     }
 
 
@@ -98,3 +101,15 @@ def test_upload_is_written_to_the_redirected_dir_not_uploads(client, monkeypatch
     assert (tmp_path / name).exists()
     # Checks one invented path only; never lists or reads uploads/.
     assert not os.path.exists(os.path.join("uploads", name))
+
+
+def test_non_loopback_clients_are_refused(monkeypatch):
+    remote = TestClient(main.app, raise_server_exceptions=False, client=("203.0.113.7", 50000))
+    response = remote.get("/categories")
+    assert response.status_code == 403
+
+
+def test_ipv6_loopback_is_allowed(client, monkeypatch, tmp_path):
+    local6 = TestClient(main.app, raise_server_exceptions=False, client=("::1", 50000))
+    pipeline_raises(monkeypatch, DuplicateStatement("dup"))
+    assert upload(local6).status_code == 409

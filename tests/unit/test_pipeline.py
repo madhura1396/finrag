@@ -1,4 +1,8 @@
-"""persist_statement and the duplicate guard, with the database mocked."""
+"""persist_statement and the duplicate guard, with the database mocked.
+
+The label helpers (version lock, history, category lookups) are stubbed here;
+they are exercised against a real database in tests/integration.
+"""
 
 from datetime import date
 from types import SimpleNamespace
@@ -7,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app import pipeline
+from app import categorization, category_store, pipeline
 from app.models import Statement, Transaction
 from app.statement import DuplicateStatement, StatementRejected
 from tests.unit.factories import valid_statement, with_summary
@@ -21,25 +25,44 @@ def fake_session(existing=None):
     session.add.side_effect = added.append
 
     def flush():
+        next_tx_id = 100
         for obj in added:
             if isinstance(obj, Statement):
                 obj.id = 42
+            elif isinstance(obj, Transaction) and obj.id is None:
+                next_tx_id += 1
+                obj.id = next_tx_id
 
     session.flush.side_effect = flush
     session.added = added
     return session
 
 
+SECTION_IDS = {"fees": 101, "interest": 102}
+NAMES = {101: "Fees", 102: "Interest", 103: "Other", 104: "Groceries"}
+
+
+@pytest.fixture(autouse=True)
+def stub_label_helpers(monkeypatch):
+    calls = {"lock": 0, "bump": 0, "history": []}
+    monkeypatch.setattr(categorization, "lock_version", lambda db: calls.__setitem__("lock", calls["lock"] + 1))
+    monkeypatch.setattr(categorization, "bump_version", lambda db: calls.__setitem__("bump", calls["bump"] + 1))
+    monkeypatch.setattr(categorization, "open_history", lambda db, tx, change_id: calls["history"].append(tx.id))
+    monkeypatch.setattr(category_store, "names_by_id", lambda db: NAMES)
+    monkeypatch.setattr(category_store, "system_category_id", lambda db, key: SECTION_IDS[key])
+    return calls
+
+
 @pytest.fixture
 def session(monkeypatch):
     s = fake_session()
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: s)
+    monkeypatch.setattr(pipeline, "new_session", lambda: s)
     return s
 
 
 def test_rejected_statement_never_opens_a_session(monkeypatch):
     opened = MagicMock()
-    monkeypatch.setattr(pipeline, "SessionLocal", opened)
+    monkeypatch.setattr(pipeline, "new_session", opened)
     with pytest.raises(StatementRejected) as exc:
         pipeline.persist_statement(with_summary(valid_statement(), new_balance="0.00"), "s.pdf")
     assert [m.check for m in exc.value.mismatches] == ["summary_equation"]
@@ -83,16 +106,31 @@ def test_fee_and_interest_rows_get_fixed_category_at_insert(session):
 
     for section, category in (("fees", "Fees"), ("interest", "Interest")):
         rows = [tx for tx in txs if tx.section == section]
-        assert rows and all(tx.category == category for tx in rows)
-        assert all(tx.merchant == tx.raw_description for tx in rows)
+        assert rows
+        assert all(tx.category_id == SECTION_IDS[section] and tx.category_source == "section" for tx in rows)
+        assert all(tx.category == category for tx in rows)            # transitional text copy
+        assert all(tx.merchant == tx.raw_description and tx.merchant_source == "section" for tx in rows)
 
-    # Other rows are left for LLM enrichment: never given a fixed category.
-    assert all(tx.category not in ("Fees", "Interest") for tx in txs if tx.section == "purchases")
+
+def test_other_rows_start_pending_with_no_category(session):
+    pipeline.persist_statement(valid_statement(), "s.pdf")
+    purchases = [o for o in session.added if isinstance(o, Transaction) and o.section == "purchases"]
+    assert purchases
+    for tx in purchases:
+        assert (tx.category_id, tx.category_source, tx.category) == (None, "pending", None)
+        assert tx.merchant_source == "pending"
+
+
+def test_upload_locks_and_bumps_data_version_and_opens_history(session, stub_label_helpers):
+    data = valid_statement()
+    pipeline.persist_statement(data, "s.pdf")
+    assert stub_label_helpers["lock"] == 1 and stub_label_helpers["bump"] == 1
+    assert len(stub_label_helpers["history"]) == len(data.rows)
 
 
 def test_existing_period_raises_duplicate_and_adds_nothing(monkeypatch):
     s = fake_session(existing=object())
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: s)
+    monkeypatch.setattr(pipeline, "new_session", lambda: s)
     with pytest.raises(DuplicateStatement):
         pipeline.persist_statement(valid_statement(), "s.pdf")
     assert s.added == []
@@ -117,7 +155,7 @@ def test_other_integrity_errors_are_not_disguised(session):
 
 def test_legacy_path_raises_duplicate_not_value_error(monkeypatch):
     s = fake_session(existing=object())
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: s)
+    monkeypatch.setattr(pipeline, "new_session", lambda: s)
     monkeypatch.setattr(pipeline, "extract_raw_text", lambda path: [])
     monkeypatch.setattr(
         pipeline, "parse_statement_period", lambda pages: (date(2025, 12, 3), date(2026, 1, 2))

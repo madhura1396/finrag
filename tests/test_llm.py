@@ -1,8 +1,12 @@
 """
-Manual test script for llm.py
-Run with: python -m tests.test_llm
+Manual test script for llm.py: calls the live local model.
+Run with: python -m tests.test_llm   (needs Ollama running with llama3.2)
+
+Invented descriptors only. Excluded from pytest (tests/conftest.py).
 """
-from app.llm import call_llm_batch
+from app.category_store import description_key
+from app.categories import DEFAULT_CATEGORIES
+from app.llm import label_descriptions
 
 
 def separator(title: str):
@@ -11,42 +15,35 @@ def separator(title: str):
     print(f"{'='*60}")
 
 
-fake_transactions = [
-    {"id": 1, "raw_description": "TRADER JOE S #534 SAN FRANCISCO CA"},
-    {"id": 2, "raw_description": "SOUTHWEST AIRLINES 8009359792 TX"},
-    {"id": 3, "raw_description": "DOORDASH*CHIPOTLE 855-973-1040 CA"},
-    {"id": 4, "raw_description": "SPECTRUM 855-707-7328 MO"},
-    {"id": 5, "raw_description": "AMAZON.COM*2X3K9 AMZN.COM/BILL WA"},
+FAKE_DESCRIPTIONS = [
+    "GROCER MART #101 SPRINGFIELD",
+    "SKYWAY AIRLINES 8005550100",
+    "FOODDASH*TACO TOWN 855-555-0101",
+    "CABLECO INTERNET 855-555-0102",
+    "MEGASTORE.COM*2X3K9 BILLING",
 ]
 
 
-def test_call_llm_batch():
-    separator("TEST 1: call_llm_batch()")
+def test_label_descriptions():
+    separator("TEST 1: label_descriptions()")
     print("Calling Ollama — this may take 10-30 seconds...")
 
-    results, missed_ids = call_llm_batch(fake_transactions)
+    by_key = {description_key(d): d for d in FAKE_DESCRIPTIONS}
+    results = label_descriptions(by_key, DEFAULT_CATEGORIES)
 
-    print(f"\nResults ({len(results)} returned):")
-    for r in results:
-        print(f"  id={r['id']}  merchant={r['merchant']!r}  category={r['category']!r}")
+    failed = [key for key, label in results.items() if label is None]
+    for key, label in results.items():
+        print(f"  {key!r:40} -> {label}")
 
-    if missed_ids:
-        print(f"\n⚠ Missed IDs: {missed_ids}")
-    else:
-        print("\n✓ No missed transactions")
-
-    assert len(results) > 0, "LLM returned nothing"
-    print("\n✓ PASSED")
-    return missed_ids
-
-
-
+    if failed:
+        print(f"\n⚠ No valid label for: {failed}")
+    assert len(failed) < len(results), "the model labelled nothing"
     print("\n✓ PASSED")
 
 
 if __name__ == "__main__":
     try:
-        test_call_llm_batch()
+        test_label_descriptions()
         separator("ALL TESTS PASSED")
     except Exception as e:
         print(f"\n✗ ERROR: {type(e).__name__}: {e}")
