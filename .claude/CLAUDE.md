@@ -6,16 +6,21 @@ I am also using this project to learn senior engineering, so every design choice
 
 ## Scope
 
-- Today: parses Wells Fargo credit card PDF statements only (`app/extractor.py` is Wells Fargo specific).
-- Target: statements from any bank and any account type.
-- `extractor.py` is being replaced. Do not add more Wells Fargo specific logic. New parsing code must not assume one bank's layout.
-- How we support multiple banks is an open architectural decision (see below). Do not pick an approach on your own.
+- Today: Wells Fargo credit card only (ADR 0002, Decision 1). Target: Wells Fargo, Chase, Discover, Fidelity. PDF statements only.
+- Extraction design is decided in docs/adr/0002-profile-based-extraction.md. Follow it; do not reopen it without asking me.
+- Bank-specific knowledge lives only in profiles/*.yaml. Code in app/ must stay bank-agnostic.
+- app/extractor.py is legacy and will be deleted by the plan in docs/plans/extraction-rebuild.md.
 
 ## Hard constraints
 
 - Privacy: statement content never leaves this machine. Any option that would send statement text, transactions or embeddings to an external API must say so as its first con.
 - Money is `Decimal` / `Numeric`, never float.
-- A parse failure must never silently become a wrong number. Fail loudly or flag the row.
+- A parse failure must never silently become a wrong number. Fail loudly: reject the statement and save nothing (ADR 0002).
+
+## Code ownership
+
+- Claude writes the code in app/ and tests/. I decide architecture through the decision protocol and review every PR.
+- When a change is ready, run senior-reviewer on the diff and fix every blocker, then ask me to confirm the commit.
 
 ## Architectural decisions: evaluate with me first
 
@@ -57,6 +62,8 @@ app/            production code
   eval_search.py  retrieval eval script (runs on import)
   reembed.py      one-off re-embedding script
 docs/adr/       architecture decision records
+docs/plans/     implementation plans
+profiles/       bank layout profiles, YAML
 experiments/    model-internals research, not part of the app
 tests/          manual print scripts, not pytest yet
 ```
@@ -91,14 +98,16 @@ python demo.py                                                      # needs the 
 
 - Never commit to `main`. One branch and one PR per change: `fix/<name>`, `feat/<name>`, `chore/<name>`, `adr/<name>`.
 - Commit messages: imperative subject under 72 characters, then a body that says why.
-- Never push, force push, rebase or delete branches unless I ask.
+- Before every commit, show me git status, the files to be staged and the commit message, and wait for me to confirm. After I confirm, commit and push the branch with git push -u origin <branch>. Never push to main, never force push, never rebase or delete branches.
 - Run `git status` before and after any change and tell me what changed.
+- Stage files by name. Never use git add -A or git add .
 
 ## Data safety
 
 - Never read `.env` or anything in `uploads/`. They hold credentials and real bank statements.
 - Never run SQL that writes to the database (INSERT, UPDATE, DELETE, DROP, TRUNCATE, ALTER) unless I ask.
 - Never paste real transaction data into commit messages, PRs, ADRs or docs.
+- To check profiles against my real statements, write a script that prints only pass/fail per file, plus on failure the failing check names and section keys (fixed words from code and the profile, never amounts, dates, merchants or other statement text; ADR 0003). I run it; you never read its input files.
 
 ## Working style
 
