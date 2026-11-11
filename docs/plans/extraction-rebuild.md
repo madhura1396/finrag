@@ -1,6 +1,11 @@
 # Plan: extraction rebuild
 
-Implements [ADR 0002](../adr/0002-profile-based-extraction.md) with the contracts and data decisions in [ADR 0003](../adr/0003-extraction-contracts-and-data.md), and the read path in [ADR 0004](../adr/0004-code-owned-read-path.md). There are four PRs, merged in order, each on its own branch (PR1, the read-path PR, PR2, PR3), plus a data step the user runs between PR2 and PR3.
+Implements [ADR 0002](../adr/0002-profile-based-extraction.md) with the contracts and data decisions in [ADR 0003](../adr/0003-extraction-contracts-and-data.md), the read path in [ADR 0004](../adr/0004-code-owned-read-path.md), and user-owned categories in [ADR 0005](../adr/0005-user-owned-categories.md). There are five PRs, merged in order, each on its own branch (PR1, the categories PR, the read-path PR, PR2, PR3), plus a data step the user runs between PR2 and PR3.
+
+Schema changes:
+- `migrations/0001` adds `section` (PR1, already applied).
+- The categories PR then **resets** the database: all tables are dropped and recreated from the models, with categories seeded. The data is dummy (user, 2026-11-11; ADR 0005 amends ADR 0003).
+- Incremental migrations resume once real data exists.
 
 Rules for every PR:
 - Run `senior-reviewer` on the diff, fix every blocker, then ask the user to confirm the commit.
@@ -115,40 +120,121 @@ The validator reports every mismatch, not just the first.
 
 ---
 
+## Categories PR: user-owned categories with deterministic rules (ADR 0005)
+
+Branch: `feat/user-owned-categories`. **Merges after PR1 and before the read-path PR.**
+
+**Goal.**
+- Categories and merchants are deterministic and consistent: per field, section, then pin, then rule, then memory, then model (temperature 0, constrained).
+- Every change is previewed, token-checked, logged, versioned (SCD2) and undoable in reverse order.
+- Categories are an SCD2 dimension with durable IDs.
+
+**Database reset.** After merge, the user runs `python -m scripts.reset_db --database-url <finrag URL> --yes`, or asks Claude to run it.
+- It drops all tables and recreates them through `app/db_setup.py` on that explicit target, never the import-time engine: `section NOT NULL`, the ADR 0005 tables and constraints, then the seed.
+- It prints the target before acting and refuses without `--yes`.
+- It **refuses if the target has any `statements` row**, unless given `--destroy-real-data` and the database name typed back at a prompt. So it is safe now (dummy data) and refuses by default after the data step.
+- `uploads/` is not touched.
+- From then until PR2, the legacy upload path (which writes no `section`) fails loudly with a 500. Uploads are paused anyway (ADR 0003, decision 3), and the database stays empty.
+
+**Files**
+
+| File | Change |
+|---|---|
+| `scripts/reset_db.py` (new) | Explicit `--database-url`, `--yes`, the data-keyed guard above; calls `db_setup`; reports table counts. |
+| `app/db_setup.py` (new) | `create_tables(engine)`, moved from `app/models.py:100` (the pgvector extension, then `Base.metadata.create_all`), and `seed(session)`: when `category_ids` is empty, insert the system categories (fixed IDs), the defaults and the single `data_version` row; otherwise do nothing. Imports `models` and `categories`. |
+| `app/categories.py` (new) | The seed data only: default names, and the system categories `Fees`, `Interest` and `Other` with fixed IDs. |
+| `app/models.py` | Models for every ADR 0005 table: `category_ids`, `category_versions`, `category_rules`, `label_memory` (per-field sources), `transaction_label_history`, `change_log`, `review_items` and `data_version`. Also every ADR 0005 constraint (the partial unique indexes, including the non-archived-name index; the `pending` check constraint), and the new `transactions` columns (`category_id`, per-field source and rule ID; no pinned flags). `section` becomes `nullable=False`. **Transitional:** `transactions.category` (text) becomes nullable with no default, NULL while `pending`, and is dropped by the read-path PR. `create_tables` is removed from here. |
+| `app/category_store.py` (new, read only) | `normalise()` and `description_key()` (with an empty-key fallback); current category versions and names in bulk, including archived (the one `valid_to IS NULL` resolver); point-in-time lookups. Imports only `models`. |
+| `app/embedding_text.py` (new) | `build_embedded_text(row, category_name)` and `is_stale(row, category_name)`, moved from `app/embedder.py:13-17`. No heavy imports. |
+| `app/categorization.py` (new, writes) | Rule validation (compile, nested-repetition check, length cap 200); per-field precedence; equal-priority conflicts (refused at creation; at ingest a `conflict` review item and a fall-through); memory per field (never a category for `none_fit` or failures; one model call per key per batch); `data_version` and preview tokens (payload hash plus version, `SELECT … FOR UPDATE`); apply (current columns, the transitional text, history, change log and version bump in one transaction); pins as change-log entries; soft-delete of rules; fall-through to memory or `pending`; reverse-order undo as a compensating change; rename, merge, delete and archive with system-category guards; `review_items` creation and resolution. |
+| `app/llm.py` | Temperature 0. Output constrained to current enrichment categories (from `category_store`) or `none_fit`, plus a merchant name and an optional suggestion; validated. Invalid output leaves the row `pending`. |
+| `app/pipeline.py` | `persist_statement` inserts section rows with `Fees`/`Interest` (source `section`) and other rows `pending` (with a `pending` review item), opens history versions, and bumps `data_version`. `enrich_transactions` calls the model outside the lock, then takes the `data_version` lock, re-checks each row is still `pending`, applies per-field precedence through `categorization`, writes memory, history and review items, and bumps the version. |
+| `app/embedder.py` | Keeps only the model; text building moves to `embedding_text.py`. |
+| `app/reembed.py` | Resolves names in bulk through `category_store`; uses `embedding_text`. |
+| `app/main.py` | The ADR 0005 endpoints, plus `POST /embeddings/refresh` and `POST /enrichment/retry`. Background re-embed after applies; background `pending` enrichment after uploads, after applies and at startup. A **loopback-only middleware** (403 for non-loopback clients). `GET /statements/{id}/transactions` returns `category: null` and `category_source: "pending"` for unenriched rows. |
+| `app/query_router.py`, `app/eval_search.py` | No change. They keep reading the transitional text column, which has no rows in this window. |
+| `migrations/0001_add_transaction_section.sql` | Comment only: the `NOT NULL` step is now done by the reset. |
+| `pytest.ini` | `testpaths = tests/unit tests/integration`; register the `integration` marker; `addopts = -m "not integration"`. Moved here from the read-path PR, since this is the first PR with integration tests. |
+| `tests/integration/conftest.py` (new) | Reads `FINRAG_TEST_DATABASE_URL`; skips if unset; **refuses unless the database name is exactly `finrag_test`**; builds its own engine; `create_tables(engine)` and `seed`; drops everything after. Moved here from the read-path PR. |
+| `tests/unit/test_pipeline.py` | Updated for `pending`, section categories by ID, review items and history versions. |
+| `tests/unit/test_categorization.py`, `tests/unit/test_categories_api.py`, `tests/unit/test_db_setup.py` (new); `tests/integration/test_categorization_db.py` (new) | See Tests. |
+| `.claude/CLAUDE.md` | Layout: `category_store.py`, `categorization.py`, `categories.py`, `db_setup.py`, `embedding_text.py`, `scripts/reset_db.py`, `tests/integration/`. Write path: `pipeline.py -> categorization.py, category_store.py, llm.py, embedding_text.py, embedder.py`. Running locally: setup becomes `python -c "from app.db_setup import ..."` (replacing `app.models.create_tables`), and the reset command with its guard. A rule: the API is loopback-only (unauthenticated write endpoints). Tests: the integration suite, how to run it, and the user-approved exception. Data safety: the carve-out letting the integration suite write to `finrag_test` only, never `finrag`. |
+
+**Unit tests (no Ollama, no Postgres).** Invented descriptors only.
+- **Normalisation:** `GROCER MART #101 SPRINGFIELD` and `GROCER MART #202 SPRINGFIELD` share a key; an all-digit description falls back to a non-empty key.
+- **`db_setup`:** the seed on an empty database creates the system categories, the defaults and the `data_version` row; a second `seed` after a default was renamed or archived does **not** resurrect it.
+- **`reset_db`:** refuses without `--yes`; refuses when `statements` has rows unless given `--destroy-real-data` plus the typed name; never touches the import-time engine (asserted by patching it to fail).
+- **Rules:** contains and regex; an invalid regex and nested repetition refused; the length cap; the highest priority wins per field; an equal-priority conflict refused at creation and flagged at ingest (the field falls through, `needs_review`).
+- **Precedence per field:** section beats pin beats rule beats memory beats model. A merchant-only pin does not freeze the category. Rules never change pinned fields or section rows.
+- **The model** is mocked:
+  - only enrichment categories or `none_fit` are accepted,
+  - invalid output leaves the row `pending`,
+  - `none_fit` gives `Other` with `needs_review` and is **not** remembered,
+  - memory is written once per key and reused, and one key in a batch means one call,
+  - a merchant is remembered even when the category was `none_fit`,
+  - an apply that labels a row while its enrichment call is in flight wins: enrichment re-checks `pending` under the lock and skips it.
+- **Preview and apply:** a token from an earlier `data_version` (after a change **or an upload**) gives 409; a different payload with the same token gives 409; apply writes the current columns, the derived text, the history and one change-log entry together.
+- **Rule delete:** soft-deleted; rows fall to memory or `pending`; no model call in the request; the preview counts both.
+- **Pins** are change-log entries; a pin set after change #N blocks undoing #N on that row.
+- **Undo:**
+  - a compensating change, so history stays append-only and point-in-time is correct across an undo,
+  - refused when a later change touched the same rows, rules, memory or category, listing the blockers,
+  - rows ingested after the change follow the current rules.
+- **Rename:** no transaction labels change (only the transitional text copy); a new version opens; point-in-time shows the old name for old dates; the embedded text goes stale.
+- **Merge:** rows, rules, memory and category pins are re-pointed; the source gets an open archived version and its name becomes reusable; an archived target is refused. Delete merges into `Other`. System categories are refused for rename, merge, delete and as targets; pins on section rows are refused.
+- **The stale-embedding check** (`embedding_text.is_stale`) detects a relabel, a rename and a pending row being labelled. `build_embedded_text` takes the name and does no database access.
+- **Review items:** `none_fit` stores the suggestion; a conflict stores the rule IDs; a `pending` row gets one; resolution records the change ID.
+- **The loopback middleware:** a request from a non-loopback client gets 403.
+- **Endpoints:** shapes, preview-then-apply, and 409s.
+
+**Integration tests (`finrag_test`)**
+- `create_tables(engine)` and the seed on an empty `finrag_test`; `reset_db --database-url <finrag_test>` end to end.
+- The constraints: a second open version per category or per transaction, a duplicate memory key, a duplicate current non-archived name (case-insensitive) and a null `category_id` with a non-`pending` source are each rejected **by the database**. An archived name can be reused.
+- Current columns equal open history after ingest, apply, undo, rename and merge.
+- `SELECT … FOR UPDATE` serialises two concurrent applies (one gets 409), and an apply against a concurrent enrichment write.
+- Point-in-time queries.
+
+**Done when**
+- Unit and integration suites are green.
+- `scripts/reset_db.py` works on `finrag_test`.
+- `senior-reviewer` reports no blockers.
+
+---
+
 ## Read-path PR: code owns every number (ADR 0004)
 
 Branch: `feat/code-owned-read-path`. **Merges before PR2**, which is the first change that stores signed rows.
 
 **Goal.** The LLM only fills a validated form and arranges code-written facts. Thin SQL fetches rows, and pure Python computes every number. Code writes the exact answer; a checked placeholder rewrite makes it read naturally.
 
-**Expected effect.** Every current row is legacy (`section IS NULL`), so after merge every question is refused with "re-ingest pending" until the data step. That is intended (ADR 0004).
+**Expected effect.** After the categories PR's reset, the database is empty until real statements are uploaded after PR2, so `/query` answers "no data" with coverage `none`. There are no legacy rows to refuse (ADR 0005 amends ADR 0004).
 
 **Files**
 
 | File | Change |
 |---|---|
-| `app/categories.py` (new) | The known categories, moved from `app/llm.py:6`, as `ALL_CATEGORIES` (read-path validation) and `ENRICHMENT_CATEGORIES` (the enrichment prompt; never contains `Fees` or `Interest`). Imported by `llm.py` and by the read path, so the read path never imports `llm.py`. |
+| (categories) | Already provided by the categories PR (ADR 0005): validation uses current category names from `app/category_store.py`. The read path never imports `categorization.py` or `llm.py`. |
 | `app/read_settings.py` (new) | All thresholds and timeouts (ADR 0004 Consequences), the closed glue-word list for the rewrite check, and `FINRAG_REFUSED_LOG`, defaulting to `~/.finrag/refused_questions.log` and expanded at runtime. |
-| `app/question_form.py` (new) | The JSON schema (12 types plus `unsupported`, fields from ADR 0004 detail 2) and the Ollama structured-output call (30 s timeout; unreachable or timed out gives 503). Validation and resolution, all pure functions: categories against `categories.py`; merchant matching (normalise, contains with at least 3 characters, or at least 90% similar); trip matching (2c); periods resolved against an injected "today", including dates without a year (most recent occurrence started on or before today; ADR 0004 2a′); every relative token's fixed range; `ytd`; defaults per type; same-length "before" ranges. |
-| `app/read_queries.py` (new) | The six queries of ADR 0004 (Testing), each taking an injected session: rows by date range only (with `section`, `needs_review` and has-embedding); statement periods; distinct merchant names; trips; the legacy-row check; the pgvector search (date range and direction applied in SQL before the cap, direction passed in as parameters). |
-| `app/calculations.py` (new, pure) | Everything numeric over `Decimal`, given rows and statement periods: day coverage (full, partial, none); direction, category and merchant filters (Definitions 1, with 0.00 rows excluded); the 12 types' results; refunds beside spending; per-day averages; month buckets; medians; the anomaly and recurring rules; counts of `needs_review`, off-list and no-embedding rows. It also exports the direction definitions as parameters for the search query. |
+| `app/question_form.py` (new) | The JSON schema (12 types plus `unsupported`, fields from ADR 0004 detail 2) and the Ollama structured-output call (30 s timeout; unreachable or timed out gives 503). Validation and resolution, all pure functions: categories against current category names passed in from `category_store` (the function stays pure); merchant matching (normalise, contains with at least 3 characters, or at least 90% similar); trip matching (2c); periods resolved against an injected "today", including dates without a year (most recent occurrence started on or before today; ADR 0004 2a′); every relative token's fixed range; `ytd`; defaults per type; same-length "before" ranges. |
+| `app/read_queries.py` (new) | The five queries of ADR 0004 (Testing; the legacy-row check is removed by ADR 0005), each taking an injected session: rows by date range only (with `section`, `needs_review`, `category_source`, has-embedding, `embedded_text` for the stale check, and the current category name from `category_store`); statement periods; distinct merchant names; trips; the pgvector search (date range and direction applied in SQL before the cap, direction passed in as parameters). |
+| `app/calculations.py` (new, pure) | Everything numeric over `Decimal`, given rows and statement periods: day coverage (full, partial, none); direction, category and merchant filters (Definitions 1, with 0.00 rows excluded); the 12 types' results; refunds beside spending; per-day averages; month buckets; medians; the anomaly and recurring rules; counts of `needs_review` and `pending` rows for every answer, and stale-embedding (via `embedding_text.is_stale`) and no-embedding rows for search. Pending rows (null category) stay in every total without a category filter, and appear as "Uncategorised (pending)" in category breakdowns, rankings and `category_change` (ADR 0005 amends ADR 0004). It also exports the direction definitions as parameters for the search query. |
 | `app/answers.py` (new) | Facts rendered as tokens; `answer_exact`; tables; the "Understood as" line; the placeholder-rewrite call (15 s timeout) and its checks (each token once, no digits outside tokens, no comparison, negation or quantity words outside tokens, length); fixed number and date formatting. |
-| `app/query_router.py` | Orchestration only: legacy-row check, then form, then validate, then fetch, then calculate, then answer, then rewrite. It appends unsupported or not-understood questions to the refused-question log, ignoring write failures with a warning. `_classify`, `_generate_sql`, `_validate_sql`, `_schema_for` and `_format_answer` are removed. |
-| `app/llm.py` | Imports `CATEGORIES` from `app/categories.py`. No behaviour change. |
+| `app/query_router.py` | Orchestration only: form, then validate, then fetch, then calculate, then answer, then rewrite. It appends unsupported or not-understood questions to the refused-question log, ignoring write failures with a warning. `_classify`, `_generate_sql`, `_validate_sql`, `_schema_for` and `_format_answer` are removed. |
 | `app/main.py` | The `/query` contract (ADR 0004, detail 6) and the 503. |
+| `app/models.py`, `app/eval_search.py` | Drop the transitional `transactions.category` text column (ADR 0005); `eval_search.py` reads names through `category_store`. The schema change is applied by a reset (dummy data) or an `ALTER TABLE … DROP COLUMN` the user runs. |
 | `demo.py` | Shows `understood_as` and `answer`; handles `refused` and 503. |
 | `requirements.txt` | Add `pyyaml` (eval question files). PR2's row for it becomes a no-op. |
-| `pytest.ini` | `testpaths = tests/unit tests/integration`. Register the `integration` marker and exclude it by default (`addopts = -m "not integration"`), so `pytest -m integration` collects the integration suite and plain `pytest` does not. |
 | `evals/read_path/questions.yaml`, `evals/read_path/teach.yaml` (new) | About 80 synthetic test questions with expected forms (including `unsupported`), and a separate few-shot set. Invented merchants and trips. |
 | `evals/read_path/run.py` (new) | Manual eval with Ollama up. Reports accuracy overall, per type and per field, plus the rewrite-rejection rate. |
 | `app/eval_search.py` | Use the search cutoff and cap from `read_settings.py` instead of its hardcoded threshold 1.0 and limit 10, and run only under `if __name__ == "__main__"` rather than on import. That makes it the cap-50 search eval. |
 | `tests/unit/test_calculations.py`, `test_question_form.py`, `test_answers.py`, `test_query_api.py` (new) | Unit tests, below. |
 | `tests/integration/test_read_queries.py`, `tests/integration/conftest.py` (new) | Integration suite, below. |
-| `.claude/CLAUDE.md` | Layout: the new modules and `evals/`. Read path: `main.py -> query_router.py -> question_form.py, read_queries.py, calculations.py, answers.py, embedder.py, categories.py, read_settings.py -> models.py`. Write path: add `llm.py -> categories.py`. Tests: the integration suite exception and how to run it. Data safety: "never read the refused-question log", and a carve-out letting the integration suite write to `finrag_test` only (user-approved; never `finrag`). |
+| `.claude/CLAUDE.md` | Layout: the new modules and `evals/`. Read path: `main.py -> query_router.py -> question_form.py, read_queries.py, calculations.py, answers.py, embedder.py, category_store.py, read_settings.py -> models.py`. Data safety: "never read the refused-question log". (The integration suite rule and carve-out were added by the categories PR.) |
 
 **Unit tests (no Ollama, no Postgres; the LLM is mocked)**
 - **`calculations`:**
   - each of the 12 types on synthetic signed rows: spending shown positive, rankings correct in both orders, 0.00 rows never counted, refunds stated beside spending, never netted;
+  - a `pending` row (null category) counts in an unfiltered total, appears as "Uncategorised (pending)" in a category ranking, is excluded from a category-filtered total, and is counted in the notes;
   - direction definitions: `payments` against `refunds` against `received`;
   - day coverage full, partial and none; `compare` with unequal lengths deciding on per-day average; refusal when a comparison range is partial;
   - `monthly_trend` labelling partial months; history types below their minimums;
@@ -160,7 +246,7 @@ Branch: `feat/code-owned-read-path`. **Merges before PR2**, which is the first c
   - periods: every relative token against a fixed today; `ytd` and its default; the same-length "before"; per-type defaults;
   - malformed model JSON, and out-of-range values (`limit` 0 or 51, an unknown `type`, a bad month), are refused as "not understood";
   - yearless dates on a fixed today: "December" on 11 Nov 2026 is Dec 2025, "May 5 to July 5" is 2026, a wrapping range rolls back a year;
-  - "trader joes" against "TRADER JOE S #534" does not match (0.815, no containment) and lists the closest names. This is a known limit, pinned so a change is deliberate.
+  - a typed "grocer marts" against the stored invented merchant "GROCER MART S #101" does not match (no containment, under 90% similar) and lists the closest names. A known limit, pinned so a change is deliberate.
 - **`answers`:**
   - the rewrite is rejected for a missing or duplicated token, a digit outside tokens, over-length text, and **every word on the closed list** (one parametrised case per word, including approximators, exclusions and direction verbs such as "received", "saved", "almost", "except");
   - a faithful arrangement is accepted;
@@ -169,21 +255,19 @@ Branch: `feat/code-owned-read-path`. **Merges before PR2**, which is the first c
 - **`/query`:**
   - every response field, with money and dates as strings;
   - refused is a 200; a model that is down is a 503; a rewrite timeout gives `answer_exact`;
-  - the legacy-row refusal;
   - the refused-question log written to a temp path, only for unsupported or not understood, and a write failure ignored. An autouse fixture points `FINRAG_REFUSED_LOG` at a temp path for **every** test, so no test can append to the real log.
 
 **Integration tests (`pytest -m integration`, user-approved)**
-- `tests/integration/conftest.py` reads `FINRAG_TEST_DATABASE_URL`, skips if unset, and **refuses unless the database name is `finrag_test`**. It creates the tables, loads synthetic rows and statements, and drops everything after.
+- Uses the `tests/integration/conftest.py` from the categories PR (name guard, own engine, `create_tables(engine)`), adding synthetic rows and statements.
 - The fetch query returns exactly the rows for date, category, merchant and direction filters (including boundary dates).
 - The pgvector search respects the cutoff, cap and direction.
-- The legacy-row check sees `section IS NULL` rows.
 - Statement periods, distinct merchant names, trips and the no-embedding flag come back correctly.
 
 **Done when**
 - `python -m pytest` is green.
 - `python -m pytest -m integration` is green against `finrag_test`.
 - `evals/read_path/run.py` runs and its baseline scores are recorded in the PR (scores, not a gate).
-- `demo.py` works against the new response, showing "re-ingest pending" until the data step.
+- `demo.py` works against the new response, showing "no data" until real statements are uploaded.
 - `senior-reviewer` reports no blockers.
 
 ---
@@ -201,8 +285,8 @@ Branch: `feat/profile-reader`
 | `profiles/wells_fargo.credit_card.v1.yaml` (new) | All bank-specific strings and layout facts (shape below). |
 | `app/profile.py` (new) | Load the YAML into a typed `Profile` using `yaml.safe_load`. Reject unknown keys, missing keys and wrong types at load time (the lesson of #6 and #8, and the guard against YAML implicit typing). Section keys must come from the canonical set in `app/statement.py`: `payments`, `other_credits`, `purchases`, `cash_advances`, `fees`, `interest`. The pipeline's fee and interest handling depends on these keys across banks. |
 | `app/reader.py` (new) | `read_statement(pdf_path, profile) -> StatementData`. Owns PDF text access and period parsing, which move here from `extractor.py` and `app/pipeline.py:13-14`. Rules below. |
-| `app/pipeline.py` | `extract_from_pdf` loads the single profile, then calls `read_statement`, then `persist_statement`. The guard is live from here. The profile is found as the only `*.yaml` in `profiles/`; zero or several is a startup error. That keeps any bank name out of `app/` and adds no selection logic (ADR 0002, Decision 3). `enrich_transactions` skips rows in sections `fees`/`interest` for `call_llm_batch`, since their category was set at insert (ADR 0003, 2b). They are still embedded. |
-| `app/categories.py` | Add `Fees` and `Interest` to the known category list (moved here by the read-path PR, which merged before this one; ADR 0003 2a/2b, ADR 0004). |
+| `app/pipeline.py` | `extract_from_pdf` loads the single profile, then calls `read_statement`, then `persist_statement`. The guard is live from here. The profile is found as the only `*.yaml` in `profiles/`; zero or several is a startup error. That keeps any bank name out of `app/` and adds no selection logic (ADR 0002, Decision 3). Fee and interest rows are handled by the categories PR's section precedence (they never reach the model). |
+| (categories) | No change: `Fees` and `Interest` are system categories seeded by the categories PR (ADR 0005). This PR's rows in those sections get their IDs via `persist_statement`. |
 | `requirements.txt` | No change: `pyyaml` was added by the read-path PR. |
 | `tests/fixtures/__init__.py`, `tests/fixtures/make_wells_fargo.py` (new) | Synthetic PDF generator, below. |
 | `tests/unit/test_profile.py`, `tests/unit/test_reader.py`, `tests/unit/test_check_profiles.py` (new) | See Tests. |
@@ -356,15 +440,14 @@ summary:
 
 ## Data step (user, between PR2 and PR3)
 
-Run in order. Claude writes the SQL in PR2 as `migrations/0002_delete_legacy_statements.sql` and `migrations/0003_require_transaction_section.sql`. Only the user runs them.
+The database was reset by the categories PR, so there is nothing to delete or convert.
 
 1. Run `python scripts/check_profiles.py <your statements>` (add `--numbered` if you will paste the output) and get `PASS` on every file. If any line says `FAIL`, paste the output so the profile can be fixed. Do not continue until every file passes.
-2. **Back up first.** `pg_dump -Fc finrag > finrag_before_reingest.dump`, kept outside the repo. This is the rollback for every step below: `pg_restore --clean -d finrag finrag_before_reingest.dump`.
-3. Make sure Ollama is running with `llama3.2`. Enrichment runs after the statement commits (`app/pipeline.py:53`, `app/main.py:32`, open issue #3 item 4), so an Ollama failure mid-upload leaves an unenriched statement that a retry rejects with 409.
-4. Run `0002`. It deletes from `transactions` first, then `statements`, in one transaction (`app/models.py:54` has a foreign key with no cascade). These are the legacy, unverified data (ADR 0003, decision 6).
-5. Re-upload every statement through `/upload`. If any upload fails partway (a 500, or an Ollama error), stop and restore the dump (step 2), then retry once the cause is fixed. Do not try to patch individual statements.
-6. Run `0003`: `ALTER TABLE transactions ALTER COLUMN section SET NOT NULL;`. It fails loudly if any row lacks a section.
-7. Tell Claude the steps are done. Delete the dump when you are satisfied.
+2. Optional: if anything you care about has been entered since the reset, back it up first: `pg_dump -Fc finrag > finrag_backup.dump`, kept outside the repo.
+3. Make sure Ollama is running with `llama3.2`. Enrichment failures leave rows `pending`, retried in the background (ADR 0005), so they do not block uploads.
+4. Upload every statement through `/upload`.
+5. Review `none_fit`, `pending` and conflict rows through the review endpoint, and add rules for anything mislabelled.
+6. Tell Claude the steps are done.
 
 ---
 
@@ -372,9 +455,9 @@ Run in order. Claude writes the SQL in PR2 as `migrations/0002_delete_legacy_sta
 
 Branch: `chore/remove-legacy-extractor`
 
-**Precondition.** The user confirms the data step is complete.
+**Precondition.** The user confirms the data step is complete (all real statements PASS and are uploaded).
 
-**Goal.** Remove the LLM-described structure and the line state machine, so there is one extraction path, and make the model match the now-required column.
+**Goal.** Remove the LLM-described structure and the line state machine, so there is one extraction path.
 
 **Files**
 
@@ -382,9 +465,6 @@ Branch: `chore/remove-legacy-extractor`
 |---|---|
 | `app/extractor.py` | Delete. Text access and period parsing already moved to `reader.py` in PR2. |
 | `app/pipeline.py` | Remove any remaining `extractor` imports. |
-| `app/models.py` | `Transaction.section` becomes `nullable=False`, matching migration `0003`. |
-| `app/query_router.py`, `app/read_queries.py` | Remove the legacy-row (`section IS NULL`) refusal and its query, now impossible (ADR 0004). |
-| `tests/unit/test_query_api.py`, `tests/integration/test_read_queries.py` | Remove the legacy-refusal tests. They cannot pass once `section` is `NOT NULL`. |
 | `tests/test_extractor.py` | Delete, and remove it from `collect_ignore`. |
 | `.claude/CLAUDE.md` | Layout: remove `extractor.py`. Also drop it from the "Ollama URL hardcoded in" line. |
 
@@ -404,11 +484,9 @@ Branch: `chore/remove-legacy-extractor`
 ## Not in these PRs
 
 - #10: `/upload` is `async def` but does blocking work, so it blocks the event loop. ADR 0002 keeps upload synchronous, but the fix (a plain `def`, so FastAPI runs it in a threadpool) is a separate small PR.
-- #3 item 4: enrichment failure after the statement commits.
+- #3 item 4 (enrichment failure after the statement commits) is addressed by ADR 0005: failures leave rows `pending`, counted and retried, never silently labelled.
 - #12: statement identity across cards. Deferred in ADR 0002. This is also the trigger to adopt Alembic (ADR 0003, decision 1).
 - Rejected PDFs stay in `uploads/` (`app/main.py:23-25`).
-- **Mixed signs before the data step.** Between PR2 merging and the re-ingest, legacy rows (unsigned, `section IS NULL`) sit next to signed rows. The read-path PR refuses every question while any `section IS NULL` row exists (ADR 0004).
-- LLM categories are not validated against the category list (`app/pipeline.py:86`, issue #4 item 1). The model could label a purchase `Fees` or `Interest`.
 
 ## Still open
 
