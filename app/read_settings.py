@@ -22,6 +22,7 @@ SEARCH_CAP = 50
 
 MERCHANT_SIMILARITY = 0.90       # difflib ratio against the whole name or any word
 MERCHANT_MIN_CONTAINS = 3        # typed text shorter than this never matches by containment
+CATEGORY_NEAR = 0.75             # an unknown category this close to a category name is not tried as a merchant
 CLOSEST_NAMES = 3
 
 ANOMALY_RATIO = Decimal("1.5")           # spend above ratio x median of previous full months

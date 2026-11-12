@@ -23,6 +23,8 @@
   form: {type: total_spent, category: shopping, period: last_year}
 - question: How much went on entertainment in the last 3 months?
   form: {type: total_spent, category: entertainment, period: last_3_months}
+- question: how much did I spend on fooddash
+  form: {type: total_spent, merchant: fooddash}
 
 - question: How much did I pay off in November?
   form: {type: total_received, direction: payments, period: "--11"}
@@ -140,6 +142,10 @@
   form: {type: search, search_text: coffee shop}
 - question: Any refunds that look like airline tickets?
   form: {type: search, search_text: airline tickets, direction: refunds}
+- question: Find charges that look like tolls or city fees
+  form: {type: search, search_text: tolls or city fees}
+- question: Any charges that look like online orders?
+  form: {type: search, search_text: online orders}
 
 - question: What's my credit score?
   form: {type: unsupported}

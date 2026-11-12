@@ -281,3 +281,41 @@ def test_implausible_years_are_not_understood(bad):
 def test_overlapping_comparison_periods_are_refused():
     out = resolve(type="compare", period="2026", period_2="2026-03")
     assert isinstance(out, Refusal) and "overlap" in out.reason
+
+
+
+# --- demo fixes ------------------------------------------------------------------
+
+@pytest.mark.parametrize("value", ["null", " None ", "n/a"])
+def test_spelled_out_null_is_absent(value):
+    raw = qf.parse_raw({"type": "ranking", "merchant": value, "period": value, "direction": value})
+    assert (raw.merchant, raw.period, raw.direction) == (None, None, None)
+
+
+@pytest.mark.parametrize("type_", ["total_spent", "compare"])
+def test_unfilled_period_template_is_not_understood(type_):
+    with pytest.raises(NotUnderstood):
+        resolve(type=type_, period="--MM")
+
+
+def fallback(category, merchants):
+    return qf.resolve(RawForm(type="total_spent", category=category), ctx(merchants=merchants))
+
+
+def test_unknown_category_naming_a_merchant_by_whole_word_becomes_the_merchant():
+    form = fallback("uber", ["UBER TRIP", "TUBERS CAFE", "Taco Town"])     # substring-only neighbour excluded
+    assert (form.category, form.merchants, form.merchant_text) == (None, ("UBER TRIP",), "uber")
+
+
+@pytest.mark.parametrize("word, merchant", [("gas", "Vegas Buffet"), ("car", "Caribou Coffee"),
+                                            ("grocery", "Grocery Outlet")])
+def test_category_fallback_needs_a_whole_word_and_a_word_not_near_a_category(word, merchant):
+    out = fallback(word, [merchant])
+    assert isinstance(out, Refusal) and "Groceries" in out.detail["categories"]
+
+
+@pytest.mark.parametrize("type_", ["unsupported", "anomalies"])
+def test_search_words_on_a_non_search_type_are_not_understood(type_):
+    with pytest.raises(NotUnderstood):
+        resolve(type=type_, search_text="parking")
+

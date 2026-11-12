@@ -59,6 +59,7 @@ def run_forms(cases) -> int:
 
     per_type, per_field = defaultdict(Counter), defaultdict(Counter)
     correct = failed = 0
+    filed_as_category = Counter()       # merchant or trip values the model put in category
     for case in cases:
         expected = normalise(case["form"])
         try:
@@ -72,6 +73,9 @@ def run_forms(cases) -> int:
         fields = ["type"] if expected["type"] == "unsupported" else FIELDS
         ok = got is not None and all(field_matches(f, expected[f], got[f]) for f in fields)
         correct += ok
+        for f in ("merchant", "trip"):
+            if expected[f] and got and got["category"] and not expected["category"]:
+                filed_as_category[f] += 1
         failed += got is None
         per_type[expected["type"]]["right" if ok else "wrong"] += 1
         for f in fields:
@@ -81,6 +85,7 @@ def run_forms(cases) -> int:
 
     total = len(cases)
     print(f"\nForm accuracy: {correct}/{total} ({100 * correct / total:.1f}%), unusable output: {failed}")
+    print(f"Merchant in category: {filed_as_category['merchant']}, trip in category: {filed_as_category['trip']}")
     print("\nPer type:")
     for t, c in sorted(per_type.items()):
         print(f"  {t:24s} {c['right']}/{c['right'] + c['wrong']}")
