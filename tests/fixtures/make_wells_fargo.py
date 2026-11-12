@@ -22,8 +22,11 @@ PAGE_W, PAGE_H = 612, 792
 FONT_SIZE = 8
 LINE = 12
 COLS = {"card": 36, "trans": 92, "post": 140, "ref": 188, "desc": 290, "credit": 470, "debit": 530}
-HEADER = [("card", "Card Ending in"), ("trans", "Trans Date"), ("post", "Post Date"),
+# The real header is stacked over three lines: the top line names every column;
+# "Ending Date Date" and then "in" sit about 9 points apart below it.
+HEADER = [("card", "Card"), ("trans", "Trans"), ("post", "Post"),
           ("ref", "Reference Number"), ("desc", "Description"), ("credit", "Credits"), ("debit", "Charges")]
+HEADER_STACK = [[("card", "Ending"), ("trans", "Date"), ("post", "Date")], [("card", "in")]]
 SECTIONS = [
     ("payments", "Payments", "TOTAL PAYMENTS FOR THIS PERIOD"),
     ("other_credits", "Other Credits", "TOTAL OTHER CREDITS FOR THIS PERIOD"),
@@ -61,6 +64,8 @@ class Spec:
     page2_period: tuple[date, date] | None = None
     cash_advances: Decimal = D("0.00")
     data_offset: dict = field(default_factory=dict)   # column -> x shift for data cells only (misalignment)
+    stacked_header: bool = True                  # real layout: header over three lines
+    purchases_amount_first_line: bool = True     # real layout: amount beside the first line of the wrapped label
 
 
 def money(amount: Decimal) -> str:
@@ -118,6 +123,10 @@ class _Writer:
     def header(self) -> None:
         for col, label in HEADER:
             self.text(COLS[col], label)
+        for stacked in (HEADER_STACK if self.spec.stacked_header else []):
+            self.y += 9
+            for col, label in stacked:
+                self.text(COLS[col], label)
         self.y += LINE
 
     def table_line(self) -> None:
@@ -134,7 +143,9 @@ class _Writer:
             right = right[1:]
         left = [("", "Previous Balance", "previous_balance"), ("-", "Payments", "payments"),
                 ("-", "Other Credits", "other_credits"), ("+", "Cash Advances", "cash_advances"),
-                ("+", "Purchases, Balance Transfers &", None), ("", "Other Charges", "purchases"),
+                *((("+", "Purchases, Balance Transfers &", "purchases"), ("", "Other Charges", None))
+                  if self.spec.purchases_amount_first_line else
+                  (("+", "Purchases, Balance Transfers &", None), ("", "Other Charges", "purchases"))),
                 ("+", "Fees Charged", "fees"), ("+", "Interest Charged", "interest")]
         if self.spec.extra_summary_label:
             left.append(("+", self.spec.extra_summary_label, "__extra"))

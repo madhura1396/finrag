@@ -53,6 +53,7 @@ class Profile:
     summary_end: str
     summary_anchor: str
     summary_lines: tuple[SummaryLine, ...]
+    header_continuation: tuple[str, ...] = ()   # exact lines under a stacked header
 
 
 def _expect(mapping, keys: set[str], where: str, optional: set[str] = frozenset()) -> None:
@@ -91,7 +92,7 @@ def parse(data) -> Profile:
     date_format = _str(data["period"]["date_format"], "period.date_format")
 
     table = data["table"]
-    _expect(table, {"header", "columns", "y_tolerance"}, "table")
+    _expect(table, {"header", "columns", "y_tolerance"}, "table", optional={"header_continuation"})
     if not isinstance(table["header"], list) or not table["header"]:
         raise ProfileError("table.header must be a list of labels")
     header = tuple(_str(h, "table.header[]") for h in table["header"])
@@ -100,6 +101,10 @@ def parse(data) -> Profile:
     for key, label in columns.items():
         if label not in header:
             raise ProfileError(f"table.columns.{key} '{label}' is not in table.header")
+    continuation = table.get("header_continuation", [])
+    if not isinstance(continuation, list):
+        raise ProfileError("table.header_continuation must be a list of lines")
+    continuation = tuple(_str(c, "table.header_continuation[]") for c in continuation)
     if isinstance(table["y_tolerance"], bool) or not isinstance(table["y_tolerance"], (int, float)) \
             or not 0 < table["y_tolerance"] < 20:
         raise ProfileError("table.y_tolerance must be a number of points between 0 and 20")
@@ -145,7 +150,7 @@ def parse(data) -> Profile:
         undated_rows=undated, summary_start=_str(summary["start_label"], "summary.start_label"),
         summary_end=_str(summary["end_label"], "summary.end_label"),
         summary_anchor=_str(summary["right_column_anchor"], "summary.right_column_anchor"),
-        summary_lines=tuple(lines),
+        summary_lines=tuple(lines), header_continuation=continuation,
     )
 
 

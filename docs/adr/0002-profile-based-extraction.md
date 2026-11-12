@@ -15,7 +15,7 @@
 
 Layout facts from one real Wells Fargo credit card statement (no transaction data recorded here):
 
-- The transaction table header is `Card Ending in | Trans Date | Post Date | Reference Number | Description | Credits | Charges`. Money is in either the Credits or the Charges column. There is no single Amount column.
+- The transaction table header is `Card Ending in | Trans Date | Post Date | Reference Number | Description | Credits | Charges`. Money is in either the Credits or the Charges column. There is no single Amount column. (Verified later on a real statement: the header is stacked over three lines, top line `Card | Trans | Post | Reference Number | Description | Credits | Charges`, then `Ending Date Date`, then `in`. See ADR 0003, Context.)
 - A statement has 5 tables. Only the 2 with this header hold transactions. The header repeats on the continuation page.
 - Inside the table, sections are `Payments`, `Other Credits`, `Purchases, Balance Transfers & Other Charges`, `Fees Charged` and `Interest Charged`. Each ends in a line `TOTAL ... FOR THIS PERIOD`.
 - PyMuPDF `get_text("words")`, grouped by vertical position, rebuilt every row. Per-section sums matched every printed total exactly.
