@@ -14,6 +14,12 @@ from sqlalchemy.orm import Session
 
 from app.models import CategoryId, CategoryVersion
 
+# Statement sections whose rows get a fixed system category.
+SECTION_CATEGORY_KEYS = {"fees": "fees", "interest": "interest"}
+
+# Category names that would collide with label states.
+RESERVED_NAMES = {"none_fit", "pending"}
+
 # "No value" spelled out: absent in a form field, so reserved as category names.
 PLACEHOLDER_WORDS = frozenset({"", "null", "none", "n/a", "nil", "undefined"})
 

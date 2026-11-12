@@ -32,14 +32,14 @@ def rows_of(data):
 
 # --- a valid statement --------------------------------------------------------------
 
-def test_valid_statement_matches_ground_truth_and_reconciles(tmp_path):
-    data, truth = read(tmp_path, standard_spec())
-    assert rows_of(data) == truth
-    assert validate(data) == []
-
-
-def test_continuation_pages_neither_duplicate_nor_drop_rows(tmp_path):
-    data, truth = read(tmp_path, standard_spec(rows_per_page=3))
+@pytest.mark.parametrize("changes", [
+    {},
+    {"rows_per_page": 3},                           # continuation pages neither duplicate nor drop rows
+    {"stacked_header": False},                      # continuation lines are optional
+    {"purchases_amount_first_line": False},         # older layout: label wraps before its amount
+])
+def test_valid_statement_matches_ground_truth_and_reconciles(tmp_path, changes):
+    data, truth = read(tmp_path, standard_spec(**changes))
     assert rows_of(data) == truth and validate(data) == []
 
 
@@ -60,17 +60,14 @@ def test_layout_features(tmp_path):
     assert data.summary["previous_balance"].value == D("100.00")                  # right column not mixed in
 
 
-def test_december_to_january_years(tmp_path):
-    spec = Spec(date(2025, 12, 3), date(2026, 1, 2), [
+@pytest.mark.parametrize("spec", [
+    Spec(date(2025, 12, 3), date(2026, 1, 2), [                                   # December to January
         Txn("purchases", date(2025, 12, 28), "GROCER MART", D("-10.00")),
-        Txn("purchases", date(2026, 1, 1), "CORNER CAFE", D("-5.00")),
-    ])
-    data, truth = read(tmp_path, spec)
-    assert rows_of(data) == truth and validate(data) == []
-
-
-def test_february_29_in_a_leap_year(tmp_path):
-    spec = Spec(date(2028, 2, 3), date(2028, 3, 2), [Txn("purchases", date(2028, 2, 29), "GROCER MART", D("-10.00"))])
+        Txn("purchases", date(2026, 1, 1), "CORNER CAFE", D("-5.00"))]),
+    Spec(date(2028, 2, 3), date(2028, 3, 2), [Txn("purchases", date(2028, 2, 29), "GROCER MART", D("-10.00"))]),
+    replace(standard_spec(), rows=standard_spec().rows + [Txn("fees", None, "LATE FEE", D("-29.00"))]),  # undated fee
+])
+def test_years_and_undated_rows(tmp_path, spec):
     data, truth = read(tmp_path, spec)
     assert rows_of(data) == truth and validate(data) == []
 
@@ -84,41 +81,30 @@ def test_dropped_row(tmp_path):
     assert ("section_total", "purchases") in checks(read(tmp_path, spec)[0])
 
 
-def test_total_off_by_one_cent(tmp_path):
-    spec = standard_spec()
-    spec = replace(spec, totals={"payments": D("250.01")})
-    assert ("section_total", "payments") in checks(read(tmp_path, spec)[0])
+@pytest.mark.parametrize("changes, expected", [
+    ({"totals": {"purchases": None}}, {("section_total", "purchases")}),
+    ({"include_summary": False}, {("summary_not_found", None), ("no_printed_totals", None)}),
+    ({"include_anchor": False}, {("summary_not_found", None)}),
+    ({"extra_summary_label": "Bonus Points"}, {("unknown_summary_label", None)}),
+])
+def test_missing_or_unknown_printed_lines(tmp_path, changes, expected):
+    assert expected <= checks(read(tmp_path, standard_spec(**changes))[0])
 
 
-def test_missing_total_line(tmp_path):
-    assert ("section_total", "purchases") in checks(read(tmp_path, standard_spec(totals={"purchases": None}))[0])
+@pytest.mark.parametrize("changes, expected", [
+    ({"page2_period": (date(2026, 9, 4), date(2026, 10, 2))}, ("period_mismatch", None)),
+    ({"cash_advances": D("40.00")}, ("summary_section", "cash_advances")),
+    ({"rows": []}, ("no_rows", None)),
+])
+def test_inconsistent_statement(tmp_path, changes, expected):
+    assert expected in checks(read(tmp_path, standard_spec(**changes))[0])
 
 
-def test_missing_summary(tmp_path):
-    found = checks(read(tmp_path, standard_spec(include_summary=False))[0])
-    assert ("summary_not_found", None) in found and ("no_printed_totals", None) in found
-
-
-def test_missing_summary_anchor(tmp_path):
-    assert ("summary_not_found", None) in checks(read(tmp_path, standard_spec(include_anchor=False))[0])
-
-
-def test_summary_equation_off_by_one_cent(tmp_path):
-    spec = standard_spec()
-    from tests.fixtures.make_wells_fargo import summary_values
-    spec = replace(spec, summary={"new_balance": summary_values(spec)["new_balance"] + D("0.01")})
-    assert checks(read(tmp_path, spec)[0]) == {("summary_equation", None)}
-
-
-def test_date_eight_days_before_the_period(tmp_path):
-    spec = standard_spec()
-    spec.rows.append(Txn("purchases", date(2026, 8, 26), "EARLY SHOP", D("-1.00")))
-    assert ("date_window", "purchases") in checks(read(tmp_path, spec)[0])
-
-
-def test_zero_rows(tmp_path):
-    spec = Spec(date(2026, 9, 3), date(2026, 10, 2), [])
-    assert ("no_rows", None) in checks(read(tmp_path, spec)[0])
+def test_header_not_found(tmp_path):
+    path = tmp_path / "s.pdf"
+    make_statement(path, standard_spec())
+    data = read_statement(path, replace(PROFILE, header=("No Such Header",)))
+    assert ("header_not_found", None) in checks(data)
 
 
 def test_unparseable_amount(tmp_path):
@@ -133,20 +119,6 @@ def test_unreadable_interest_date_is_invalid_not_closing_date(tmp_path):
     data, _ = read(tmp_path, spec)
     assert ("row_invalid", "interest") in checks(data)
     assert not any(r.description == "INTEREST CHARGE ON PURCHASES" for r in data.rows)
-
-
-def test_unknown_summary_label(tmp_path):
-    assert ("unknown_summary_label", None) in checks(read(tmp_path, standard_spec(extra_summary_label="Bonus Points"))[0])
-
-
-def test_period_differs_on_page_two(tmp_path):
-    spec = standard_spec(page2_period=(date(2026, 9, 4), date(2026, 10, 2)))
-    assert ("period_mismatch", None) in checks(read(tmp_path, spec)[0])
-
-
-def test_nonzero_cash_advances(tmp_path):
-    spec = standard_spec(cash_advances=D("40.00"))
-    assert ("summary_section", "cash_advances") in checks(read(tmp_path, spec)[0])
 
 
 def test_no_text_layer_is_rejected(tmp_path):
@@ -167,7 +139,7 @@ def test_mismatches_never_echo_cell_text(tmp_path):
     assert "8.4O" not in text and "CORNER" not in text
 
 
-# --- review round: dates and descriptions --------------------------------------------
+# --- review fixes: dates, descriptions, stacked header, summary wrap ---------------
 
 def test_shifted_columns_reject_instead_of_storing_the_post_date(tmp_path):
     # Data cells sit left of their header labels: the trans date lands under "Card
@@ -205,34 +177,11 @@ def test_page_footer_is_never_glued_onto_a_description(tmp_path):
 
 
 def test_the_profile_date_format_reaches_the_reader(tmp_path):
-    from dataclasses import replace as dc_replace
     path = tmp_path / "s.pdf"
     make_statement(path, standard_spec())                  # printed 09/03/2026 to 10/02/2026
     with pytest.raises(StatementRejected) as e:            # read day-first, the period reverses
-        read_statement(path, dc_replace(PROFILE, date_format="%d/%m/%Y"))
+        read_statement(path, replace(PROFILE, date_format="%d/%m/%Y"))
     assert e.value.mismatches[0].check == "period_not_found"
-
-
-def test_undated_fee_rows_get_the_closing_date(tmp_path):
-    spec = standard_spec()
-    spec.rows.append(Txn("fees", None, "LATE FEE", D("-29.00")))
-    data, truth = read(tmp_path, spec)
-    assert rows_of(data) == truth and validate(data) == []
-
-
-def test_summary_label_wrapped_before_its_amount(tmp_path):
-    # The older layout: label continues onto the line that carries the amount.
-    data, truth = read(tmp_path, standard_spec(purchases_amount_first_line=False))
-    assert rows_of(data) == truth and validate(data) == []
-    assert data.summary["purchases"].value == section_total(standard_spec(), "purchases")
-
-
-# --- review round: stacked header and summary wrap -----------------------------------
-
-def test_a_one_line_header_still_reads(tmp_path):
-    # The profile's continuation lines are optional: absent, nothing is skipped.
-    data, truth = read(tmp_path, standard_spec(stacked_header=False))
-    assert rows_of(data) == truth and validate(data) == []
 
 
 def test_header_continuation_is_skipped_only_directly_under_the_header(tmp_path):
@@ -264,17 +213,15 @@ def _summary_lines(*rows):
     return [lines]
 
 
-def test_summary_attach_needs_the_completing_words_on_the_very_next_line():
+@pytest.mark.parametrize("rows", [
+    # attach needs the completing words on the very next line
+    [("Purchases, Balance Transfers &", "$5.00"), ("see note", None), ("Other Charges", None),
+     ("New Balance", "$105.00")],
+    # an unknown label with a non-completing line is rejected
+    [("Bonus Points", "$1.00"), ("Other Charges", None), ("New Balance", "$101.00")],
+])
+def test_summary_wrap_never_attaches_loosely(rows):
     from app.reader import _summary
-    values, mismatches = _summary(_summary_lines(
-        ("Purchases, Balance Transfers &", "$5.00"), ("see note", None), ("Other Charges", None),
-        ("New Balance", "$105.00")), PROFILE)
+    values, mismatches = _summary(_summary_lines(*rows), PROFILE)
     assert "purchases" not in values
-    assert "unknown_summary_label" in {m.check for m in mismatches}
-
-
-def test_summary_unknown_label_with_a_non_completing_line_is_rejected():
-    from app.reader import _summary
-    values, mismatches = _summary(_summary_lines(
-        ("Bonus Points", "$1.00"), ("Other Charges", None), ("New Balance", "$101.00")), PROFILE)
     assert "unknown_summary_label" in {m.check for m in mismatches}

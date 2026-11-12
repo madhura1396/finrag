@@ -1,11 +1,9 @@
 from sqlalchemy.exc import IntegrityError
 
 from app import categorization, category_store
-from app.categories import SECTION_CATEGORY_KEYS
-from app.models import Statement, Transaction
+from app.models import Statement, Transaction, new_session
 from app.profile import load_single
 from app.reader import read_statement
-from app.sessions import new_session
 from app.statement import DuplicateStatement, StatementData, StatementRejected, validate
 
 PERIOD_CONSTRAINT = "uq_statement_period"
@@ -44,7 +42,7 @@ def persist_statement(data: StatementData, filename: str) -> dict:
         categorization.lock_version(db)
         _raise_if_duplicate(db, data.period_start, data.period_end)
         section_ids = {section: category_store.system_category_id(db, key)
-                       for section, key in SECTION_CATEGORY_KEYS.items()}
+                       for section, key in category_store.SECTION_CATEGORY_KEYS.items()}
 
         statement = Statement(
             filename=filename,

@@ -186,7 +186,7 @@ Template first, then a **placeholder rewrite**. The model arranges code-written 
 3. Code checks the result deterministically:
    - every token appears exactly once, in order (later facts refer back to earlier ones, so reordering could attach a fact to the wrong figure),
    - no digits outside tokens,
-   - outside tokens, no word from a **closed, enumerated list** kept in `app/read_settings.py`. Every word on it is a test case. It covers:
+   - outside tokens, no word from a **closed, enumerated list** kept in `app/read_settings.py` (now `app/read_config.py`). Every word on it is a test case. It covers:
      - comparison and ranking words (more, less, fewer, up, down, higher, lower, most, least, biggest, smallest, top, bottom),
      - negations (not, no, never, none, without, n't),
      - quantity and number words (zero to twenty, dozen, hundred, thousand, twice, double, triple, half, third, quarter, percent),
@@ -336,7 +336,7 @@ A script, run by hand with Ollama up, not a unit test. It sends each eval questi
 - **LLM calls:** one for the form, plus one rewrite for answers with a sentence, instead of two to four today. The latency effect is unmeasured.
 - **Relative dates mean calendar time,** and a missing year is resolved by code, never by the model. Comparisons work over any fully covered ranges. YTD compare usually refuses until the current cycle's statement exists, and offers the largest covered comparable range.
 - **Signed amounts are safe on the read path:** the direction definitions live only in the calculation module, and the search query receives them as parameters.
-- **New modules:** `app/question_form.py`, `app/answers.py`, `app/calculations.py` (pure), `app/read_queries.py` (the thin SQL), `app/categories.py` and `app/read_settings.py`.
+- **New modules:** `app/question_form.py`, `app/answers.py`, `app/calculations.py` (pure), `app/read_queries.py` (the thin SQL), `app/categories.py` (seed data now in `app/db_setup.py`) and `app/read_settings.py` (now `app/read_config.py`).
 - **New contracts:**
   - the form schema,
   - the `/query` response,
@@ -390,9 +390,10 @@ A script, run by hand with Ollama up, not a unit test. It sends each eval questi
   - a refunds-only period is never reported as "No data";
   - the rewrite prompt names the question type, tokens must stay in order, and the glue may contain only plain ASCII words and punctuation;
   - the closed list adds or, instead, minus, plus, until, apart, lacking, supposedly, excluded, included;
-  - `app/read_types.py` holds the plain data types, with no I/O imports.
+  - `app/read_types.py` (now `app/read_config.py`) holds the plain data types, with no I/O imports.
 - **Demo fixes (fix/read-path-demo, 2026-11-11):**
   - Spelled-out nulls (`category_store.PLACEHOLDER_WORDS`: null, none, n/a, nil, undefined, "") are absent in every form field but `type`, and reserved as category names. An unfilled period template (`--MM`) stays a bad period.
   - `search_text` on any type but `search` is not understood (a type misread); it is never converted to a search.
   - A schema enum of current category names was tried and dropped: the model then put merchants and trips into a real category (eval: Megastore -> Groceries, Lakeside trip -> Travel & Transport), a silently wrong scope instead of the loud fallback or refusal below.
   - An unknown category is tried as a merchant only if it equals whole words of a merchant name and is not within 0.75 similarity (`CATEGORY_NEAR`) of a category name or word; otherwise the category refusal stands.
+- **Trips removed as out of scope (2026-11-11).** The `/trips` endpoints, the `trips` table, the form's `trip` field and its eval cases are gone. `app/read_types.py` and `app/read_settings.py` were merged into `app/read_config.py`.

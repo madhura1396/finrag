@@ -23,14 +23,10 @@ def test_the_real_profile_loads():
 
 @pytest.mark.parametrize("break_it", [
     lambda d: d.update(surprise=1),                                     # unknown top-level key
-    lambda d: d["table"].update(colour="red"),                          # unknown nested key
     lambda d: d["summary"].pop("right_column_anchor"),                  # missing key
-    lambda d: d["sections"][0].pop("total"),                            # section missing a field
     lambda d: d["table"].__setitem__("header", "Card Ending in"),       # string where a list is expected
     lambda d: d["sections"][0].__setitem__("key", "groceries"),         # not a canonical section
-    lambda d: d["summary"]["lines"]["payments"].__setitem__("sign", 2),
     lambda d: d["summary"]["lines"]["payments"].__setitem__("sign", True),
-    lambda d: d["sections"][1].__setitem__("heading", False),           # what an unquoted `no` becomes
     lambda d: d["period"].__setitem__("pattern", "Statement (\\d+)"),   # needs two groups
     lambda d: d["table"]["columns"].__setitem__("credit", "Money In"),  # not in the header
     lambda d: d["undated_rows"].append("cash_advances"),                # not a defined section

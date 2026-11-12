@@ -132,7 +132,6 @@ python demo.py
 | POST | `/query` | Ask a question in plain English |
 | GET | `/statements` | List uploaded statements |
 | GET | `/statements/{id}/transactions` | List transactions for a statement |
-| POST | `/trips` | Define a named trip by date range |
 
 ---
 

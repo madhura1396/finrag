@@ -64,8 +64,8 @@ def engine(test_url):
 def db(engine):
     """A session whose every commit is a savepoint inside one outer transaction
     that is rolled back after the test. Code under test gets sessions from the
-    same connection through app.sessions."""
-    from app.sessions import set_session_factory
+    same connection through app.models."""
+    from app.models import set_session_factory
 
     connection = engine.connect()
     outer = connection.begin()

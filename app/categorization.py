@@ -12,7 +12,7 @@ that pipeline inside a savepoint and rolls it back; apply() runs it for real
 under a lock on data_version, after checking the preview token.
 
 Functions take the session they act on. Callers get sessions from
-app.sessions.
+app.models (new_session, get_session).
 """
 
 import hashlib
@@ -25,7 +25,6 @@ from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app import category_store
-from app.categories import RESERVED_NAMES, SECTION_CATEGORY_KEYS
 from app.embedding_text import build_embedded_text, is_stale
 from app.llm import NONE_FIT, ModelLabel, label_descriptions
 from app.models import (
@@ -176,7 +175,7 @@ def load_context(session: Session) -> Context:
     memory = {m.description_key: MemorySnapshot(m.category_id, m.merchant)
               for m in session.scalars(select(LabelMemory)).all()}
     section_ids = {section: category_store.system_category_id(session, key)
-                   for section, key in SECTION_CATEGORY_KEYS.items()}
+                   for section, key in category_store.SECTION_CATEGORY_KEYS.items()}
     archived = frozenset(c.category_id for c in category_store.current_categories(session) if c.archived)
     return Context(list(rules), memory, section_ids, category_store.system_category_id(session, "other"), archived)
 
@@ -341,7 +340,7 @@ def _check_name(session: Session, name, *, ignore_category_id=None) -> str:
     name = " ".join(name.split())
     if len(name) > MAX_NAME_LENGTH:
         raise ChangeRejected(f"category name is longer than {MAX_NAME_LENGTH} characters")
-    if name.lower() in RESERVED_NAMES or name.lower() in category_store.PLACEHOLDER_WORDS:
+    if name.lower() in category_store.RESERVED_NAMES or name.lower() in category_store.PLACEHOLDER_WORDS:
         raise ChangeRejected(f"'{name}' is reserved")
     for c in category_store.current_categories(session):
         if not c.archived and c.name.lower() == name.lower() and c.category_id != ignore_category_id:

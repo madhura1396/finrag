@@ -1,5 +1,5 @@
 """Retrieval eval for the `search` question type, at the production cutoff and
-cap (app/read_settings.py), against your own database.
+cap (app/read_config.py), against your own database.
 
     python -m app.eval_search [cases.yaml]
 
@@ -15,11 +15,11 @@ from pathlib import Path
 
 import yaml
 
-from app import read_settings as rs
+from app import read_config as rs
 from app.calculations import category_of
 from app.embedder import generate_embedding
+from app.models import new_session
 from app.read_queries import search
-from app.sessions import new_session
 
 
 def cases_path(argv: list[str]) -> Path:

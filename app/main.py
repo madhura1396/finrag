@@ -12,12 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import categorization, category_store
-from app.models import CategoryRule, ChangeLog, LabelMemory, ReviewItem, Statement, Transaction, Trip
+from app.models import (
+    CategoryRule, ChangeLog, LabelMemory, ReviewItem, Statement, Transaction, get_session, new_session,
+)
 from app.pipeline import enrich_transactions, extract_from_pdf
 from app.profile import load_single
 from app.query_router import route
 from app.question_form import ModelUnavailable
-from app.sessions import get_session, new_session
 from app.statement import REJECT_REASON, DuplicateStatement, StatementRejected
 
 log = logging.getLogger("finrag")
@@ -178,39 +179,6 @@ def query(request: QueryRequest, db: Session = Depends(get_session)):
         return route(request.question, db)
     except ModelUnavailable:
         raise HTTPException(status_code=503, detail="local model unavailable; is Ollama running?")
-
-
-class TripRequest(BaseModel):
-    name:       str
-    start_date: str
-    end_date:   str
-
-
-@app.post("/trips")
-def create_trip(request: TripRequest, db: Session = Depends(get_session)):
-    from datetime import date
-    trip = Trip(
-        name=request.name,
-        start_date=date.fromisoformat(request.start_date),
-        end_date=date.fromisoformat(request.end_date),
-    )
-    db.add(trip)
-    db.commit()
-    return {"id": trip.id, "name": trip.name, "start_date": request.start_date, "end_date": request.end_date}
-
-
-@app.get("/trips")
-def list_trips(db: Session = Depends(get_session)):
-    trips = db.query(Trip).order_by(Trip.start_date.desc()).all()
-    return [
-        {
-            "id":         t.id,
-            "name":       t.name,
-            "start_date": str(t.start_date),
-            "end_date":   str(t.end_date),
-        }
-        for t in trips
-    ]
 
 
 # --------------------------------------------------------------------------

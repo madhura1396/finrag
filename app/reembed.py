@@ -4,7 +4,7 @@ Run from repo root: python -m app.reembed
 """
 from app.categorization import refresh_embeddings
 from app.embedder import generate_embedding
-from app.sessions import new_session
+from app.models import new_session
 
 
 def reembed_all() -> int:

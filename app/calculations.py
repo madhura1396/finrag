@@ -18,9 +18,9 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
-from app import read_settings as rs
+from app import read_config as rs
 from app.embedding_text import is_stale
-from app.read_types import Form, Range, Refusal, month_range
+from app.read_config import Form, Range, Refusal, month_range
 
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
@@ -302,7 +302,7 @@ def _month_key(d: date) -> tuple[int, int]:
 
 
 def _whole_month_asked(ym: tuple[int, int], r: Range) -> bool:
-    """False when the asked range clips the month (an explicit range, a trip, this_year)."""
+    """False when the asked range clips the month (an explicit range, this_year)."""
     month = month_range(*ym)
     return r.is_all or (r.start <= month.start and r.end >= month.end)
 

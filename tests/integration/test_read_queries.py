@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from app import category_store, read_queries
-from app.models import Statement, Transaction, Trip as TripModel
+from app.models import Statement, Transaction
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +39,6 @@ def data(db):
     tx(s1, date(2026, 10, 16), "50.00", "Payment", section="payments", vector=unit(0))
     tx(s2, date(2026, 11, 2), "-30.00", "Taco Town", category=None, vector=unit(1))
     tx(s2, date(2026, 11, 3), "-40.00", "Taco Town", vector=None)
-    db.add(TripModel(name="Lakeside Trip", start_date=date(2026, 10, 10), end_date=date(2026, 10, 20)))
     db.flush()
     return db
 
@@ -51,26 +50,25 @@ def test_fetch_rows_respects_inclusive_date_bounds(data):
 
 
 def test_fetch_rows_joins_current_names_and_marks_pending(data):
-    rows = {r.merchant: r for r in read_queries.fetch_rows(data, date(2026, 11, 1), date(2026, 11, 30))}
-    taco_rows = [r for r in read_queries.fetch_rows(data, date(2026, 11, 1), date(2026, 11, 30))]
+    taco_rows = read_queries.fetch_rows(data, date(2026, 11, 1), date(2026, 11, 30))
     assert {r.category for r in taco_rows} == {None, "Groceries"}
     assert {r.embedding is None for r in taco_rows} == {True, False}
 
 
-def test_statement_periods_merchants_and_trips(data):
+def test_statement_periods_and_merchants(data):
     assert read_queries.statement_periods(data) == [(date(2026, 10, 1), date(2026, 10, 31)),
                                                     (date(2026, 11, 1), date(2026, 11, 30))]
     assert read_queries.merchant_names(data) == ["Grocer Mart", "Payment", "Taco Town"]
-    assert [t.name for t in read_queries.trips(data)] == ["Lakeside Trip"]
 
 
-def test_search_applies_cutoff_and_direction(data):
-    spent = read_queries.search(data, unit(0), "spent", None, None, cutoff=0.5, cap=50)
-    assert {r.amount for r in spent} == {Decimal("-10.00"), Decimal("-20.00")}     # credits and far rows excluded
-    refunds = read_queries.search(data, unit(0), "refunds", None, None, cutoff=0.5, cap=50)
-    assert [r.amount for r in refunds] == [Decimal("5.00")]
-    payments = read_queries.search(data, unit(0), "payments", None, None, cutoff=0.5, cap=50)
-    assert [r.amount for r in payments] == [Decimal("50.00")]
+@pytest.mark.parametrize("direction, amounts", [
+    ("spent", {Decimal("-10.00"), Decimal("-20.00")}),     # credits and far rows excluded
+    ("refunds", {Decimal("5.00")}),
+    ("payments", {Decimal("50.00")}),
+])
+def test_search_applies_cutoff_and_direction(data, direction, amounts):
+    found = read_queries.search(data, unit(0), direction, None, None, cutoff=0.5, cap=50)
+    assert {r.amount for r in found} == amounts
 
 
 def test_search_applies_dates_and_cap_before_returning(data):

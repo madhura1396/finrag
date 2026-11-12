@@ -7,6 +7,7 @@ I am also using this project to learn senior engineering, so every design choice
 ## Scope
 
 - Today: Wells Fargo credit card only (ADR 0002, Decision 1). Target: Wells Fargo, Chase, Discover, Fidelity. PDF statements only.
+- Trips removed as out of scope (2026-11-11).
 - Extraction design is decided in docs/adr/0002-profile-based-extraction.md. Follow it; do not reopen it without asking me.
 - Bank-specific knowledge lives only in profiles/*.yaml. Code in app/ must stay bank-agnostic.
 - app/extractor.py is legacy and will be deleted by the plan in docs/plans/extraction-rebuild.md.
@@ -59,22 +60,20 @@ app/            production code
   profile.py        strict loader for profiles/*.yaml (the only home of bank strings)
   reader.py         PDF -> StatementData by word positions, driven by the profile
   categorization.py label precedence, rules, memory, preview/apply, history, undo (ADR 0005; writes)
-  category_store.py current category names, normaliser, description keys (read only)
-  categories.py     category seed data
-  db_setup.py       create_tables(engine, environment), seed(session)
+  category_store.py current category names, normaliser, description keys, section/reserved names (read only)
+  db_setup.py       create_tables(engine, environment), seed(session), category seed data
   db_guard.py       environment-marker guard on every connection
-  sessions.py       write-path session factory and FastAPI get_session
   llm.py            Ollama labelling: temperature 0, schema-constrained, validated
   embedding_text.py embedded text + stale check (no heavy imports)
   embedder.py       sentence-transformers embeddings
   query_router.py   read path orchestration: form -> rows -> numbers -> answer (ADR 0004)
-  question_form.py  question -> validated form; dates, merchants, trips resolved by code
+  question_form.py  question -> validated form; dates and merchants resolved by code
   read_queries.py   the read path's five SQL queries (thin; date-filtered)
   calculations.py   every read-path number, pure Python over Decimal
   answers.py        exact answers, the "Understood as" line, the checked placeholder rewrite
-  read_settings.py  read-path thresholds, timeouts, glue-word list, refused-question log path
-  read_types.py     plain read-path data types (Range, Form, Refusal, Trip); no I/O imports
-  models.py         SQLAlchemy models, engine (guarded), SessionLocal
+  read_config.py    read-path thresholds, timeouts, glue-word list, refused-log path, data types
+                    (Range, Form, Refusal); no I/O or DB imports
+  models.py         SQLAlchemy models, engine (guarded), session factory (new_session, get_session)
   eval_search.py    search eval; cases from ~/.finrag/search_eval.yaml (outside the repo)
   reembed.py        re-embed stale rows
 docs/adr/       architecture decision records
@@ -89,8 +88,8 @@ tests/          unit/ = pytest suite; integration/ = finrag_test suite; top-leve
 
 - `app/` must never import from `experiments/` or `tests/`.
 - Write path: `main.py` -> `pipeline.py` -> `profile.py`, `reader.py`, `statement.py`, `categorization.py` -> `category_store.py`, `llm.py`, `embedding_text.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`. The read path never imports `categorization.py`.
-- Setup: `scripts/reset_db.py` -> `db_setup.py` -> `models.py`, `categories.py`. `models.py` imports only `db_guard.py`.
-- Read path: `main.py` -> `query_router.py` -> `question_form.py`, `read_queries.py`, `calculations.py`, `answers.py`, `embedder.py`, `embedding_text.py`, `category_store.py`, `read_settings.py` -> `models.py`. The read path never imports `categorization.py` or `llm.py`.
+- Setup: `scripts/reset_db.py` -> `db_setup.py` -> `models.py`. `models.py` imports only `db_guard.py`.
+- Read path: `main.py` -> `query_router.py` -> `question_form.py`, `read_queries.py`, `calculations.py`, `answers.py`, `embedder.py`, `embedding_text.py`, `category_store.py`, `read_config.py` -> `models.py`. The read path never imports `categorization.py` or `llm.py`.
 
 ## Running locally
 
@@ -106,7 +105,7 @@ uvicorn app.main:app --reload                                      # binds 127.0
 python demo.py                                                      # needs the server running
 ```
 
-- Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `extractor.py`, `llm.py` and `read_settings.py`.
+- Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `extractor.py`, `llm.py` and `read_config.py`.
 - Form eval: `python -m evals.read_path.run [--rewrite]` (Ollama up). Few-shot examples live in `query_router.TEACH_EXAMPLES`; the eval refuses any overlap with its questions.
 - Every database carries an environment marker (`db_environment`): `finrag` is `production`, `finrag_test` is `test`. Connections compare it with `FINRAG_ENV` (default `production`) and refuse on a mismatch or a missing marker.
 - The label endpoints (`/changes/*`, `/categories`, `/rules`, `/memory`, `/review`, `/enrichment/retry`, `/embeddings/refresh`) write real data with no authentication. Never expose the API beyond this machine without an authentication decision first.

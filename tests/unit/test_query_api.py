@@ -10,7 +10,7 @@ from app import main, query_router, read_queries
 from app import category_store
 from app.calculations import RowView
 from app.question_form import ModelUnavailable, NotUnderstood, RawForm
-from app.sessions import get_session
+from app.models import get_session
 
 TODAY = date(2026, 12, 20)
 ROWS = [
@@ -25,7 +25,6 @@ ROWS = [
 def stubbed(monkeypatch):
     monkeypatch.setattr(read_queries, "statement_periods", lambda s: [(date(2026, 11, 1), date(2026, 11, 30))])
     monkeypatch.setattr(read_queries, "merchant_names", lambda s: ["Grocer Mart", "Taco Town"])
-    monkeypatch.setattr(read_queries, "trips", lambda s: [])
     monkeypatch.setattr(read_queries, "fetch_rows", lambda s, start=None, end=None: ROWS)
     monkeypatch.setattr(category_store, "current_categories",
                         lambda s: [category_store.Category(4, "Groceries", False, False, None)])
@@ -60,23 +59,19 @@ def test_rewrite_rejection_shows_the_exact_answer(stubbed):
     assert (out["rewrite"], out["answer"]) == ("rejected", out["answer_exact"])
 
 
-def test_unsupported_is_a_refusal_and_is_logged(stubbed, tmp_path, monkeypatch):
-    out = route(RawForm(type="unsupported"), question="what's the weather")
-    assert out["type"] == "refused" and out["result"]["kind"] == "unsupported"
+@pytest.mark.parametrize("form, kind, logged", [
+    (RawForm(type="unsupported"), "unsupported", True),
+    (NotUnderstood("garbage"), "not_understood", True),
+    (RawForm(type="total_spent", category="Petrol"), "data", False),     # data refusals are not logged
+])
+def test_refusals_and_the_refused_question_log(stubbed, tmp_path, form, kind, logged):
+    out = route(form, question="what's the weather")
+    assert out["type"] == "refused" and out["result"]["kind"] == kind
     log = tmp_path / "refused_questions.log"
-    assert log.read_text() == "what's the weather\n"
-
-
-def test_not_understood_is_refused_and_logged(stubbed, tmp_path):
-    out = route(NotUnderstood("garbage"), question="asdf qwer")
-    assert out["result"]["kind"] == "not_understood"
-    assert (tmp_path / "refused_questions.log").read_text() == "asdf qwer\n"
-
-
-def test_data_refusals_are_not_logged(stubbed, tmp_path):
-    out = route(RawForm(type="total_spent", category="Petrol"))
-    assert out["type"] == "refused" and out["result"]["kind"] == "data"
-    assert not (tmp_path / "refused_questions.log").exists()
+    if logged:
+        assert log.read_text() == "what's the weather\n"
+    else:
+        assert not log.exists()
 
 
 def test_log_write_failure_never_fails_the_answer(stubbed, monkeypatch, tmp_path):
@@ -119,20 +114,20 @@ def client():
     main.app.dependency_overrides.clear()
 
 
-def test_refusal_is_a_200(client, monkeypatch):
-    monkeypatch.setattr(main, "route", lambda q, db: {"type": "refused"})
-    assert client.post("/query", json={"question": "x"}).status_code == 200
+def raises(exc):
+    def route(q, db):
+        raise exc
+    return route
 
 
-def test_model_down_is_a_503(client, monkeypatch):
-    def down(q, db):
-        raise ModelUnavailable("no ollama")
-    monkeypatch.setattr(main, "route", down)
-    assert client.post("/query", json={"question": "x"}).status_code == 503
-
-
-def test_empty_question_is_a_400(client):
-    assert client.post("/query", json={"question": "  "}).status_code == 400
+@pytest.mark.parametrize("route_fn, question, status", [
+    (lambda q, db: {"type": "refused"}, "x", 200),          # a refusal is an answer
+    (raises(ModelUnavailable("no ollama")), "x", 503),
+    (lambda q, db: pytest.fail("not routed"), "  ", 400),   # empty question
+])
+def test_http_mapping(client, monkeypatch, route_fn, question, status):
+    monkeypatch.setattr(main, "route", route_fn)
+    assert client.post("/query", json={"question": question}).status_code == status
 
 
 def test_rows_found_in_an_uncovered_period_are_still_answered(stubbed, monkeypatch):
