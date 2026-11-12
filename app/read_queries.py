@@ -13,8 +13,7 @@ from sqlalchemy.orm import Session
 
 from app import category_store
 from app.calculations import RowView, direction_params
-from app.models import Statement, Transaction, Trip as TripModel
-from app.read_types import Trip
+from app.models import Statement, Transaction
 
 _PRESENT = object()     # stands in for an embedding: only its presence matters downstream
 
@@ -56,12 +55,6 @@ def statement_periods(session: Session) -> list[tuple[date, date]]:
 def merchant_names(session: Session) -> list[str]:
     """3. Distinct stored merchant names, for matching."""
     return list(session.scalars(select(Transaction.merchant).distinct().order_by(Transaction.merchant)).all())
-
-
-def trips(session: Session) -> list[Trip]:
-    """4. Trips, for matching."""
-    return [Trip(t.name, t.start_date, t.end_date)
-            for t in session.scalars(select(TripModel).order_by(TripModel.start_date)).all()]
 
 
 def search(session: Session, vector: list[float], direction: str, start: date | None, end: date | None,

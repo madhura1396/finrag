@@ -3,15 +3,39 @@
 Every function takes the engine or session it acts on; nothing here uses the
 import-time engine in app/models.py. These engines are unguarded on purpose:
 this module is what writes the environment marker the guard checks.
+
+It also holds the category seed data. Nothing reads that at runtime except
+seed(), which runs only on an empty database. System categories are identified
+by a stable `system_key`, not a fixed numeric ID, so seeding never fights the
+ID sequence.
 """
 
 from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from app.categories import DEFAULT_CATEGORIES, SYSTEM_CATEGORIES
 from app.db_guard import ENVIRONMENTS
 from app.models import Base, CategoryId, CategoryVersion, DataVersion, DbEnvironment
+
+# (system_key, name). These cannot be renamed, merged, deleted, targeted by
+# rules or pins, or offered to the model.
+SYSTEM_CATEGORIES = [
+    ("fees",     "Fees"),       # fixed by statement section (ADR 0003, 2b)
+    ("interest", "Interest"),   # fixed by statement section (ADR 0003, 2b)
+    ("other",    "Other"),      # the model's none_fit fallback
+]
+
+# User-owned defaults. After seeding they belong to the user: renamed, merged
+# or archived defaults are never re-created.
+DEFAULT_CATEGORIES = [
+    "Groceries",
+    "Dining & DoorDash",
+    "Travel & Transport",
+    "Shopping",
+    "Telephone & Internet",
+    "Entertainment",
+    "Health & Fitness",
+]
 
 
 def create_tables(engine: Engine, environment: str) -> None:

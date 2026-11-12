@@ -13,10 +13,9 @@ from decimal import Decimal
 from sqlalchemy.orm import Session
 
 from app import answers, calculations, category_store, read_queries
-from app import read_settings as rs
-from app.question_form import (
-    DataContext, Form, ModelUnavailable, NotUnderstood, Refusal, TYPES, ask_model, resolve,
-)
+from app import read_config as rs
+from app.question_form import DataContext, ModelUnavailable, NotUnderstood, TYPES, ask_model, resolve
+from app.read_config import Form, Refusal
 
 log = logging.getLogger("finrag.read")
 
@@ -93,7 +92,7 @@ def _interpretation(form: Form, result: calculations.Result) -> dict:
     return {
         "type": form.type, "direction": form.direction, "group_by": form.group_by, "order": form.order,
         "limit": form.limit, "category": form.category, "merchant_text": form.merchant_text,
-        "merchants": list(form.merchants), "trip": form.trip, "search_text": form.search_text,
+        "merchants": list(form.merchants), "search_text": form.search_text,
         "period": rng(form.period), "period_2": rng(form.period_2),
         "coverage": {k: c.status for k, c in result.coverage.items()},
     }
@@ -120,7 +119,6 @@ def route(question: str, session: Session, today: date | None = None, ask=ask_mo
         today=today,
         categories=[c.name for c in category_store.current_categories(session) if not c.archived],
         merchants=read_queries.merchant_names(session),
-        trips=read_queries.trips(session),
         full_months=calculations.full_months(periods),
     )
     try:

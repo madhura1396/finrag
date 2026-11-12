@@ -92,16 +92,10 @@ def test_the_script_never_imports_the_database_models(statements):
     assert out.stdout.strip().splitlines()[-1] == "CLEAN"
 
 
-def test_usage_without_arguments_exits_two():
-    assert run().returncode == 2
-
-
-def test_an_empty_folder_is_not_reported_as_success(tmp_path):
-    out = run(tmp_path)
-    assert out.returncode == 2 and "PASS" not in out.stdout
-
-
-def test_a_mistyped_flag_never_prints_file_names(statements):
+@pytest.mark.parametrize("args", [(), ("{folder}", "--numberd"), ("{empty}",)])
+def test_usage_errors_exit_two_and_print_no_file_names(statements, tmp_path_factory, args):
     folder, _, _ = statements
-    out = run(folder, "--numberd")
-    assert out.returncode == 2 and "good" not in out.stdout and "bad" not in out.stdout
+    empty = tmp_path_factory.mktemp("empty")
+    out = run(*(a.format(folder=folder, empty=empty) for a in args))
+    assert out.returncode == 2 and "PASS" not in out.stdout
+    assert "good" not in out.stdout and "bad" not in out.stdout

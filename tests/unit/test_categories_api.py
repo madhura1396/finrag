@@ -4,7 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import categorization, main
-from app.sessions import get_session
+from app.models import get_session
 
 
 @pytest.fixture

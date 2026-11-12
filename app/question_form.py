@@ -3,7 +3,7 @@
 The model only copies words into fields; its output is constrained to a JSON
 schema and then checked here. It never does date arithmetic or name
 matching: code resolves dates against an injected `today`, and matches
-merchants and trips against what is stored. Everything except ask_model() is
+merchants against what is stored. Everything except ask_model() is
 a pure function.
 """
 
@@ -16,9 +16,9 @@ from datetime import date, timedelta
 
 import httpx
 
-from app import read_settings as rs
+from app import read_config as rs
 from app.category_store import PLACEHOLDER_WORDS, normalise
-from app.read_types import ALL, Form, Range, Refusal, Trip, month_range  # noqa: F401  (re-exported)
+from app.read_config import ALL, Form, Range, Refusal, month_range
 
 TYPES = (
     "total_spent", "total_received", "count", "ranking", "largest", "list", "compare",
@@ -52,7 +52,6 @@ class RawForm:
     limit: int | None = None
     category: str | None = None
     merchant: str | None = None
-    trip: str | None = None
     search_text: str | None = None
     period: str | None = None
     period_2: str | None = None
@@ -70,7 +69,6 @@ def schema() -> dict:
             "limit":       {"type": ["integer", "null"]},
             "category":    nullable_str,
             "merchant":    nullable_str,
-            "trip":        nullable_str,
             "search_text": nullable_str,
             "period":      nullable_str,
             "period_2":    nullable_str,
@@ -92,7 +90,7 @@ type: one of {", ".join(FORM_TYPES)}.
   unsupported: anything else (advice, other accounts, actions, general knowledge). For unsupported, fill nothing else.
 direction: payments (paying the card off), refunds (money back from shops), received (all money back). Null for spending.
 group_by: merchant or category (ranking only). order: most or least (ranking only). limit: a number, only if said.
-category: a kind of spending (groceries, dining, shopping...). merchant: a named shop or business. trip: a named trip.
+category: a kind of spending (groceries, dining, shopping...). merchant: a named shop or business.
 search_text: for search only, what it should look like.
 period: the time asked about. period_2: only when the question names a second period to compare against.
   "YYYY-MM" for a month with a year, "--MM" for a month without a year, "YYYY" for a whole year,
@@ -132,7 +130,7 @@ def parse_raw(data) -> RawForm:
     if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int)
                               or not 1 <= limit <= rs.MAX_LIMIT):
         raise NotUnderstood(f"limit must be 1 to {rs.MAX_LIMIT}")
-    for name in ("category", "merchant", "trip", "search_text", "period", "period_2"):
+    for name in ("category", "merchant", "search_text", "period", "period_2"):
         if values[name] is not None and (not isinstance(values[name], str) or len(values[name]) > 200):
             raise NotUnderstood(f"{name} is not a short string")
     return RawForm(**values)
@@ -166,7 +164,6 @@ class DataContext:
     today: date
     categories: list[str]                  # current, non-archived names
     merchants: list[str]                   # distinct stored merchant names
-    trips: list[Trip]
     full_months: list[tuple[int, int]]     # fully covered calendar months, oldest first
 
 
@@ -314,29 +311,6 @@ def match_merchants(typed: str, names: list[str]) -> tuple[list[str], list[str]]
     return [], [by_norm[c] for c in closest]
 
 
-def match_trip(typed: str, trips: list[Trip]) -> Trip | Refusal:
-    needle = normalise(typed)
-    exact = [t for t in trips if normalise(t.name) == needle]
-    found = exact or [t for t in trips
-                      if len(needle) >= rs.MERCHANT_MIN_CONTAINS and needle in normalise(t.name)]
-    if not found:
-        return Refusal("data", f"no trip matching '{typed}'", {"trips": [t.name for t in trips]})
-    if len(found) > 1:
-        return Refusal("data", f"several trips match '{typed}'; name one", {"trips": [t.name for t in found]})
-    trip = found[0]
-    if trip.end < trip.start:
-        return Refusal("data", f"trip '{trip.name}' ends before it starts")
-    return trip
-
-
-def _intersect(a: Range, start: date, end: date, label: str) -> Range | None:
-    lo = max(a.start, start) if not a.is_all else start
-    hi = min(a.end, end) if not a.is_all else end
-    if hi < lo:
-        return None
-    return Range(lo, hi, label)
-
-
 def _before(r: Range) -> Range:
     """The same-length range immediately before r."""
     end = r.start - timedelta(days=1)
@@ -356,7 +330,7 @@ def _year_earlier(r: Range) -> Range:
 
 # The fields each type actually applies. Anything else the model fills is
 # dropped here, so the "Understood as" line only ever shows what was computed.
-_FILTERS = {"direction", "category", "merchant", "trip", "period"}
+_FILTERS = {"direction", "category", "merchant", "period"}
 APPLIED_FIELDS = {
     "total_spent":           _FILTERS,
     "total_received":        _FILTERS,
@@ -366,7 +340,7 @@ APPLIED_FIELDS = {
     "list":                  _FILTERS,
     "compare":               _FILTERS | {"period_2"},
     "monthly_trend":         _FILTERS,
-    "category_change":       {"direction", "merchant", "trip", "period", "period_2"},
+    "category_change":       {"direction", "merchant", "period", "period_2"},
     "savings_opportunities": {"period"},       # fixed rules over all spending
     "anomalies":             {"period"},       # fixed rule over all spending, by category
     "search":                _FILTERS | {"search_text"},
@@ -429,16 +403,6 @@ def resolve(raw: RawForm, ctx: DataContext) -> Form | Refusal:
     # Periods: said by the user, or a per-type default.
     period = parse_period(raw.period, ctx.today) if raw.period else None
     period_2 = parse_period(raw.period_2, ctx.today) if raw.period_2 else None
-
-    if raw.trip is not None:
-        trip = match_trip(raw.trip, ctx.trips)
-        if isinstance(trip, Refusal):
-            return trip
-        base = period or Range(trip.start, trip.end, f"trip {trip.name}")
-        period = _intersect(base, trip.start, trip.end, f"trip {trip.name} ({trip.start} to {trip.end})")
-        if period is None:
-            return Refusal("data", f"the period asked for does not overlap trip '{trip.name}'")
-        form = replace(form, trip=trip.name)
 
     latest = [month_range(y, m, said=False) for y, m in ctx.full_months]
     if raw.type in COMPARISON_TYPES:

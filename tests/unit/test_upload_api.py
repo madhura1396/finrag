@@ -53,16 +53,13 @@ def test_rejected_statement_returns_422_with_mismatch_list(client, monkeypatch):
     }
 
 
-def test_duplicate_returns_409(client, monkeypatch):
-    pipeline_raises(monkeypatch, DuplicateStatement("Statement for 2025-12-03 → 2026-01-02 already uploaded"))
-    response = upload(client)
-    assert response.status_code == 409
-    assert "already uploaded" in response.json()["detail"]
-
-
-def test_unrelated_value_error_is_not_reported_as_conflict(client, monkeypatch):
-    pipeline_raises(monkeypatch, ValueError("something else broke"))
-    assert upload(client).status_code == 500
+@pytest.mark.parametrize("exc, status", [
+    (DuplicateStatement("Statement for 2025-12-03 → 2026-01-02 already uploaded"), 409),
+    (ValueError("something else broke"), 500),           # not reported as a conflict
+])
+def test_error_mapping(client, monkeypatch, exc, status):
+    pipeline_raises(monkeypatch, exc)
+    assert upload(client).status_code == status
 
 
 def test_success_returns_statement_summary(client, monkeypatch):

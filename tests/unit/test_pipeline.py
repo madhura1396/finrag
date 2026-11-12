@@ -89,35 +89,19 @@ def test_valid_statement_is_stored_in_one_transaction(session):
     }
 
 
-def test_amounts_are_stored_signed_and_is_credit_follows_the_sign(session):
+def test_rows_are_stored_signed_and_labelled_by_section(session):
     pipeline.persist_statement(valid_statement(), "s.pdf")
     txs = [o for o in session.added if isinstance(o, Transaction)]
     payment = next(tx for tx in txs if tx.section == "payments")
-    purchase = next(tx for tx in txs if tx.section == "purchases")
     zero_interest = next(tx for tx in txs if tx.section == "interest" and tx.amount == 0)
-    assert (payment.amount > 0, payment.is_credit) == (True, "true")
-    assert (purchase.amount < 0, purchase.is_credit) == (True, "false")
-    assert zero_interest.is_credit == "false"
-
-
-def test_fee_and_interest_rows_get_fixed_category_at_insert(session):
-    pipeline.persist_statement(valid_statement(), "s.pdf")
-    txs = [o for o in session.added if isinstance(o, Transaction)]
-
-    for section, category in (("fees", "Fees"), ("interest", "Interest")):
-        rows = [tx for tx in txs if tx.section == section]
-        assert rows
-        assert all(tx.category_id == SECTION_IDS[section] and tx.category_source == "section" for tx in rows)
-        assert all(tx.merchant == tx.raw_description and tx.merchant_source == "section" for tx in rows)
-
-
-def test_other_rows_start_pending_with_no_category(session):
-    pipeline.persist_statement(valid_statement(), "s.pdf")
-    purchases = [o for o in session.added if isinstance(o, Transaction) and o.section == "purchases"]
-    assert purchases
-    for tx in purchases:
-        assert (tx.category_id, tx.category_source) == (None, "pending")
-        assert tx.merchant_source == "pending"
+    assert (payment.amount > 0, payment.is_credit, zero_interest.is_credit) == (True, "true", "false")
+    for tx in txs:
+        if tx.section in SECTION_IDS:       # fees and interest: fixed category at insert
+            assert (tx.category_id, tx.category_source) == (SECTION_IDS[tx.section], "section")
+            assert (tx.merchant, tx.merchant_source) == (tx.raw_description, "section")
+        elif tx.section == "purchases":     # everything else waits for labelling
+            assert (tx.amount < 0, tx.is_credit) == (True, "false")
+            assert (tx.category_id, tx.category_source, tx.merchant_source) == (None, "pending", "pending")
 
 
 def test_upload_locks_and_bumps_data_version_and_opens_history(session, stub_label_helpers):
@@ -136,18 +120,15 @@ def test_existing_period_raises_duplicate_and_adds_nothing(monkeypatch):
     s.commit.assert_not_called()
 
 
-def test_unique_constraint_race_is_reported_as_duplicate(session):
-    orig = SimpleNamespace(diag=SimpleNamespace(constraint_name="uq_statement_period"))
-    session.commit.side_effect = IntegrityError("INSERT", {}, orig)
-    with pytest.raises(DuplicateStatement):
-        pipeline.persist_statement(valid_statement(), "s.pdf")
-    session.rollback.assert_called_once()
-
-
-def test_other_integrity_errors_are_not_disguised(session):
-    orig = SimpleNamespace(diag=SimpleNamespace(constraint_name="some_other_constraint"))
-    session.commit.side_effect = IntegrityError("INSERT", {}, orig)
-    with pytest.raises(IntegrityError):
+@pytest.mark.parametrize("at, constraint, raised", [
+    ("commit", "uq_statement_period", DuplicateStatement),
+    ("flush", "uq_statement_period", DuplicateStatement),     # psycopg2 raises at flush, before commit
+    ("commit", "some_other_constraint", IntegrityError),      # never disguised as a duplicate
+])
+def test_unique_constraint_race(session, at, constraint, raised):
+    orig = SimpleNamespace(diag=SimpleNamespace(constraint_name=constraint))
+    getattr(session, at).side_effect = IntegrityError("INSERT", {}, orig)
+    with pytest.raises(raised):
         pipeline.persist_statement(valid_statement(), "s.pdf")
     session.rollback.assert_called_once()
 
@@ -159,16 +140,6 @@ def test_extract_reads_with_the_single_profile_then_persists(monkeypatch):
     monkeypatch.setattr(pipeline, "persist_statement", lambda data, name: {"persisted": (data, name)})
     out = pipeline.extract_from_pdf("s.pdf", "s.pdf")
     assert calls["read"] == ("s.pdf", "PROFILE") and out == {"persisted": (("s.pdf", "PROFILE"), "s.pdf")}
-
-
-def test_unique_constraint_at_flush_is_reported_as_duplicate(session):
-    # psycopg2 raises the unique violation when the INSERT is flushed, before commit.
-    orig = SimpleNamespace(diag=SimpleNamespace(constraint_name="uq_statement_period"))
-    session.flush.side_effect = IntegrityError("INSERT", {}, orig)
-    with pytest.raises(DuplicateStatement):
-        pipeline.persist_statement(valid_statement(), "s.pdf")
-    session.rollback.assert_called_once()
-    session.commit.assert_not_called()
 
 
 def test_statement_id_is_read_before_commit_expires_it(session):

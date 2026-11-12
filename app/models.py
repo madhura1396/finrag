@@ -1,4 +1,5 @@
 import os
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -6,7 +7,7 @@ from sqlalchemy import (
     JSON, BigInteger, Boolean, CheckConstraint, Column, Date, DateTime, ForeignKey,
     Index, Integer, Numeric, String, Text, UniqueConstraint, create_engine, func, text,
 )
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from pgvector.sqlalchemy import Vector
 
 from app.db_guard import install_guard
@@ -25,6 +26,35 @@ engine = create_engine(
 install_guard(engine)
 
 SessionLocal = sessionmaker(bind=engine)
+
+# Where write-path code gets its database session (ADR 0005 fixes, option B).
+# One process-wide factory, set once by the app and swapped only by tests.
+# Its safety comes from the environment guard on every engine
+# (app/db_guard.py), not from discipline: a test that forgets to swap the
+# factory hits a `production` marker and fails on connect.
+_factory: Callable[[], Session] = SessionLocal
+
+
+def new_session() -> Session:
+    return _factory()
+
+
+def set_session_factory(factory: Callable[[], Session]) -> None:
+    global _factory
+    _factory = factory
+
+
+def reset_session_factory() -> None:
+    set_session_factory(SessionLocal)
+
+
+def get_session() -> Iterator[Session]:
+    """FastAPI dependency: one session per request. Tests may override it."""
+    session = new_session()
+    try:
+        yield session
+    finally:
+        session.close()
 
 # Parent class for all table models. SQLAlchemy uses this to track
 # which Python classes represent real database tables.
@@ -279,15 +309,3 @@ class ReviewItem(Base):
     __table_args__ = (
         CheckConstraint("kind IN ('none_fit', 'conflict', 'pending')", name="ck_review_kind"),
     )
-
-
-class Trip(Base):
-    """A named trip defined by the user with a date range."""
-    __tablename__ = "trips"
-
-    id = Column(Integer, primary_key=True, index=True)
-    # User-defined name e.g. "Hawaii Trip", "Vermont Trip"
-    name = Column(String, nullable=False)
-    start_date = Column(Date, nullable=False)
-    end_date = Column(Date, nullable=False)
-    created_at = Column(DateTime, default=_now)

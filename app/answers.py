@@ -15,9 +15,9 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 
-from app import read_settings as rs
+from app import read_config as rs
 from app.calculations import Coverage, Result
-from app.read_types import Form, Range
+from app.read_config import Form, Range
 
 DIRECTION_NOUNS = {"spent": "charges", "payments": "payments", "refunds": "refunds", "received": "credits"}
 TYPE_WORDS = {
@@ -39,10 +39,6 @@ def fmt_money(amount: Decimal) -> str:
 
 def fmt_date(d: date) -> str:
     return f"{d.day} {calendar.month_abbr[d.month]} {d.year}"
-
-
-def fmt_pct(value: Decimal) -> str:
-    return f"{value.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)}%"
 
 
 def fmt_range(r: Range) -> str:
@@ -79,8 +75,6 @@ def understood_as(form: Form, result_coverage: dict, span) -> str:
         parts.append(f"category {form.category}")
     if form.merchants:
         parts.append(f"merchants {', '.join(form.merchants)} (matched \"{form.merchant_text}\")")
-    if form.trip:
-        parts.append(f"trip {form.trip}")
     if form.search_text:
         parts.append(f"looks like \"{form.search_text}\"")
     period = fmt_range(form.period)

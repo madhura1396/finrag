@@ -30,7 +30,7 @@ def _reset_session_factory():
     """Whatever a test does to the write-path session factory, undo it, even
     if the test crashes, so it can never leak into the next test."""
     yield
-    from app.sessions import reset_session_factory
+    from app.models import reset_session_factory
     reset_session_factory()
 
 

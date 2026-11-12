@@ -1,10 +1,18 @@
-"""Every tunable number on the read path, in one place (ADR 0004 Consequences).
+"""Read-path settings and plain data types (ADR 0004).
 
-All values are unverified starting points, to be tuned once real history is
+Every tunable number on the read path lives here (ADR 0004 Consequences). All
+values are unverified starting points, to be tuned once real history is
 uploaded. Nothing else on the read path hard-codes a threshold.
+
+The data types (Range, Form, Refusal) sit beside them. No I/O or
+database imports, so the pure calculations can use this module without
+pulling in HTTP or the database.
 """
 
+import calendar
 import os
+from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -76,3 +84,51 @@ def refused_log_path() -> Path:
     """Where refused questions are appended. Outside the repo, never committed,
     and never read by Claude (.claude/CLAUDE.md, Data safety)."""
     return Path(os.path.expanduser(os.getenv("FINRAG_REFUSED_LOG", "~/.finrag/refused_questions.log")))
+
+
+# ---- Plain read-path data types ----
+
+@dataclass(frozen=True)
+class Range:
+    start: date | None          # None: all data
+    end: date | None
+    label: str
+    said: bool = True           # False when a default chose it
+
+    @property
+    def is_all(self) -> bool:
+        return self.start is None
+
+    @property
+    def days(self) -> int:
+        return (self.end - self.start).days + 1
+
+
+ALL = Range(None, None, "all data", said=False)
+
+
+@dataclass(frozen=True)
+class Form:
+    type: str
+    direction: str = "spent"
+    group_by: str = "merchant"
+    order: str = "most"
+    limit: int = DEFAULT_LIMIT
+    category: str | None = None
+    merchant_text: str | None = None
+    merchants: tuple[str, ...] = ()
+    search_text: str | None = None
+    period: Range = ALL
+    period_2: Range | None = None
+
+
+@dataclass(frozen=True)
+class Refusal:
+    kind: str                   # 'unsupported', 'not_understood' or 'data'
+    reason: str
+    detail: dict = field(default_factory=dict)
+
+
+def month_range(year: int, month: int, said: bool = True) -> Range:
+    last = calendar.monthrange(year, month)[1]
+    return Range(date(year, month, 1), date(year, month, last), f"{calendar.month_abbr[month]} {year}", said)

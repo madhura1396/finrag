@@ -5,7 +5,7 @@ Run with: python -m tests.test_llm   (needs Ollama running with llama3.2)
 Invented descriptors only. Excluded from pytest (tests/conftest.py).
 """
 from app.category_store import description_key
-from app.categories import DEFAULT_CATEGORIES
+from app.db_setup import DEFAULT_CATEGORIES
 from app.llm import label_descriptions
 
 

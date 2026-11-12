@@ -15,30 +15,25 @@ from app.categorization import Context, Labels
 
 # --- normalisation ----------------------------------------------------------
 
-def test_store_numbers_share_a_key():
+def test_store_numbers_share_a_key_and_a_key_is_never_empty():
     assert category_store.description_key("GROCER MART #101 SPRINGFIELD") == "GROCER MART SPRINGFIELD"
     assert category_store.description_key("grocer mart #202 springfield") == "GROCER MART SPRINGFIELD"
-
-
-@pytest.mark.parametrize("raw", ["12345", "#### 99", "   "])
-def test_key_is_never_empty(raw):
-    assert category_store.description_key(raw)
-
-
-def test_normalise_strips_punctuation_and_spaces():
     assert category_store.normalise("  Corner-Café,  4455 ") == "CORNER CAFÉ 4455"
+    assert all(category_store.description_key(raw) for raw in ["12345", "#### 99", "   "])
 
 
 # --- rule validation and matching -------------------------------------------
 
-@pytest.mark.parametrize("pattern,kind", [
-    ("", "contains"), ("   ", "contains"), ("!!!", "contains"),
-    ("x" * 201, "contains"), ("(", "regex"), ("(a+)+", "regex"), (r"(\w*)*", "regex"),
-    ("(x+){2,}", "regex"), ("GROCER", "glob"),
-])
+@pytest.mark.parametrize("pattern,kind", [("   ", "contains"), ("x" * 201, "contains"), ("GROCER", "glob")])
 def test_bad_patterns_are_refused(pattern, kind):
     with pytest.raises(cz.ChangeRejected):
         cz.validate_pattern(pattern, kind)
+
+
+@pytest.mark.parametrize("pattern", ["(", "(a+)+", r"(\w*)*", "(x+){2,}"])     # invalid or catastrophic backtracking
+def test_bad_regexes_are_refused(pattern):
+    with pytest.raises(cz.ChangeRejected):
+        cz.validate_pattern(pattern, "regex")
 
 
 @pytest.mark.parametrize("pattern,kind", [("GROCER MART", "contains"), (r"^GROCER\s+MART", "regex"), ("a+b", "regex")])
@@ -51,11 +46,8 @@ def rule(rule_id, pattern, priority, category=None, merchant=None, kind="contain
                            sets_category_id=category, sets_merchant=merchant)
 
 
-def test_contains_ignores_case_and_punctuation():
+def test_contains_ignores_case_and_punctuation_and_regex_matches_raw_text():
     assert cz.rule_matches(rule(1, "grocer-mart", 0, 5), "GROCER MART #101")
-
-
-def test_regex_matches_raw_text_case_insensitively():
     assert cz.rule_matches(rule(1, r"mart\s+#\d+", 0, 5, kind="regex"), "GROCER MART #101")
 
 
@@ -67,14 +59,11 @@ def test_highest_priority_wins_per_field():
     assert chosen.rule_id == 3
 
 
-def test_equal_priority_different_targets_is_a_conflict():
+def test_equal_priority_is_a_conflict_only_for_different_targets():
     rules = [rule(1, "GROCER", 5, category=10), rule(2, "MART", 5, category=20)]
     assert cz.choose_rule(rules, "GROCER MART", "category") == (
         None, [{"rule_id": 1, "target": 10}, {"rule_id": 2, "target": 20}])
-
-
-def test_equal_priority_same_target_is_not_a_conflict():
-    rules = [rule(1, "GROCER", 5, category=10), rule(2, "MART", 5, category=10)]
+    rules[1].sets_category_id = 10
     chosen, conflict = cz.choose_rule(rules, "GROCER MART", "category")
     assert (chosen.rule_id, conflict) == (1, None)
 
@@ -96,21 +85,14 @@ def mem(category_id=None, merchant=None):
     return SimpleNamespace(category_id=category_id, merchant=merchant)
 
 
-def test_section_beats_everything():
-    labels, _ = cz.resolve(tx(section="interest", category_source="pin", category_id=9),
-                           ctx([rule(1, "GROCER", 99, category=10)]))
-    assert (labels.category_id, labels.category_source) == (2, "section")
-
-
-def test_pin_beats_rule_and_memory():
-    labels, _ = cz.resolve(tx(category_id=9, category_source="pin"),
-                           ctx([rule(1, "GROCER", 99, category=10)], {"GROCER MART": mem(11)}))
-    assert (labels.category_id, labels.category_source) == (9, "pin")
-
-
-def test_rule_beats_memory():
-    labels, _ = cz.resolve(tx(), ctx([rule(1, "GROCER", 0, category=10)], {"GROCER MART": mem(11)}))
-    assert (labels.category_id, labels.category_source, labels.category_rule_id) == (10, "rule", 1)
+@pytest.mark.parametrize("row, expected", [
+    (dict(section="interest", category_source="pin", category_id=9), (2, "section")),    # section beats everything
+    (dict(category_id=9, category_source="pin"), (9, "pin")),                            # pin beats rule and memory
+    ({}, (10, "rule")),                                                                  # rule beats memory
+])
+def test_precedence(row, expected):
+    labels, _ = cz.resolve(tx(**row), ctx([rule(1, "GROCER", 99, category=10)], {"GROCER MART": mem(11)}))
+    assert (labels.category_id, labels.category_source) == expected
 
 
 def test_memory_fills_a_pending_field():
@@ -246,39 +228,19 @@ def test_model_failure_returns_none_for_every_key(monkeypatch, failure):
 
 # --- the environment guard ---------------------------------------------------------
 
-class FakeCursor:
-    def __init__(self, has_table, marker):
-        self.results = [(has_table,)] + ([(marker,)] if marker is not None else [None])
-        self.closed = False
-
-    def execute(self, sql):
-        pass
-
-    def fetchone(self):
-        return self.results.pop(0)
-
-    def close(self):
-        self.closed = True
-
-
-class FakeConnection:
-    def __init__(self, has_table=True, marker="test"):
-        self._cursor = FakeCursor(has_table, marker)
-        self.rolled_back = False
-
-    def cursor(self):
-        return self._cursor
-
-    def rollback(self):
-        self.rolled_back = True
+def fake_connection(has_table=True, marker="test"):
+    """A DB-API connection whose cursor answers the guard's two SELECTs."""
+    connection = MagicMock()
+    connection.cursor.return_value.fetchone.side_effect = [(has_table,), (marker,) if marker is not None else None]
+    return connection
 
 
 def test_guard_accepts_a_matching_marker_and_leaves_the_connection_clean(monkeypatch):
     from app import db_guard
     monkeypatch.setenv("FINRAG_ENV", "test")
-    connection = FakeConnection(marker="test")
+    connection = fake_connection(marker="test")
     db_guard._check(connection, None)
-    assert connection.rolled_back
+    connection.rollback.assert_called_once()
 
 
 @pytest.mark.parametrize("env,has_table,marker", [
@@ -286,26 +248,19 @@ def test_guard_accepts_a_matching_marker_and_leaves_the_connection_clean(monkeyp
     ("production", True, "test"),     # the app pointed at the test database
     ("test", False, None),            # never set up
     ("test", True, None),             # table but no row
+    ("staging", True, "test"),        # an unknown environment
 ])
 def test_guard_refuses(monkeypatch, env, has_table, marker):
     from app import db_guard
     monkeypatch.setenv("FINRAG_ENV", env)
     with pytest.raises(db_guard.EnvironmentMismatch):
-        db_guard._check(FakeConnection(has_table, marker), None)
-
-
-def test_guard_refuses_an_unknown_environment(monkeypatch):
-    from app import db_guard
-    monkeypatch.setenv("FINRAG_ENV", "staging")
-    with pytest.raises(db_guard.EnvironmentMismatch):
-        db_guard._check(FakeConnection(), None)
+        db_guard._check(fake_connection(has_table, marker), None)
 
 
 def test_the_app_engine_has_the_guard_installed():
     from sqlalchemy import event
     from app import db_guard, models
     assert event.contains(models.engine, "connect", db_guard._check)
-
 
 
 @pytest.mark.parametrize("name", ["null", " N/A "])

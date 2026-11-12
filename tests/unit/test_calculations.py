@@ -6,9 +6,9 @@ from decimal import Decimal
 import pytest
 
 from app import calculations as calc
-from app import read_settings as rs
+from app import read_config as rs
 from app.calculations import RowView
-from app.question_form import Form, Range, Refusal, month_range
+from app.read_config import Form, Range, Refusal, month_range
 
 D = Decimal
 
@@ -44,14 +44,10 @@ def form(**kw):
 
 # --- directions ---------------------------------------------------------------------
 
-def test_spent_is_positive_and_excludes_zero_and_credits():
+def test_spent_excludes_zero_and_credits_and_states_refunds_beside_never_netted():
     result = calc.compute(form(period=OCT), ROWS, PERIODS)
-    assert result.facts["total"] == D("51.50") and result.facts["count"] == 3
-
-
-def test_refunds_are_stated_beside_spending_never_netted():
-    result = calc.compute(form(period=OCT), ROWS, PERIODS)
-    assert (result.facts["total"], result.facts["refunds"]) == (D("51.50"), D("5.00"))
+    assert (result.facts["total"], result.facts["count"], result.facts["refunds"]) == (D("51.50"), 3, D("5.00"))
+    assert calc.compute(form(type="count", period=OCT), ROWS, PERIODS).facts["count"] == 3
 
 
 @pytest.mark.parametrize("direction,expected", [("payments", "100.00"), ("refunds", "5.00"), ("received", "105.00")])
@@ -60,18 +56,11 @@ def test_received_directions(direction, expected):
     assert result.facts["total"] == D(expected)
 
 
-def test_count_counts_the_direction_and_never_zero_rows():
-    assert calc.compute(form(type="count", period=OCT), ROWS, PERIODS).facts["count"] == 3
-
-
 # --- pending rows ---------------------------------------------------------------------
 
-def test_pending_row_counts_in_an_unfiltered_total():
-    assert calc.compute(form(period=NOV), ROWS, PERIODS).facts["total"] == D("87.00")
-
-
-def test_pending_row_is_excluded_from_a_category_filtered_total():
-    assert calc.compute(form(period=NOV, category="Groceries"), ROWS, PERIODS).facts["total"] == D("62.00")
+@pytest.mark.parametrize("category, total", [(None, "87.00"), ("Groceries", "62.00")])
+def test_pending_row_counts_only_in_an_unfiltered_total(category, total):
+    assert calc.compute(form(period=NOV, category=category), ROWS, PERIODS).facts["total"] == D(total)
 
 
 def test_pending_row_is_its_own_bucket_in_a_category_ranking():
@@ -105,13 +94,10 @@ def test_list_includes_zero_rows_and_caps():
 
 # --- coverage ---------------------------------------------------------------------------
 
-def test_coverage_full_partial_none():
+def test_coverage_full_partial_none_and_full_months():
     assert calc.coverage(OCT, PERIODS).status == "full"
     assert calc.coverage(month_range(2026, 12), PERIODS).status == "partial"
     assert calc.coverage(month_range(2026, 1), PERIODS).status == "none"
-
-
-def test_full_months_skip_partial_ones():
     assert calc.full_months(PERIODS) == [(2026, 10), (2026, 11)]
 
 
@@ -171,19 +157,18 @@ def history_rows(dining_by_month, start_month=6):
 SIX_MONTHS = [(date(2026, m, 1), month_range(2026, m).end) for m in range(6, 12)]
 
 
-def test_anomaly_needs_ratio_and_minimum_excess():
-    rows = history_rows(["100.00", "100.00", "100.00", "100.00", "100.00", "160.00"])    # Jun..Nov
-    flagged = calc.compute(form(type="anomalies", period=NOV), rows, SIX_MONTHS)
-    assert (flagged.table[0]["category"], flagged.table[0]["median"]) == ("Dining", D("100.00"))
-    rows = history_rows(["100.00", "100.00", "100.00", "100.00", "100.00", "151.00"])
-    assert calc.compute(form(type="anomalies", period=NOV), rows, SIX_MONTHS).table[0]["excess"] == D("51.00")
-    rows = history_rows(["100.00", "100.00", "100.00", "100.00", "100.00", "149.00"])
-    assert calc.compute(form(type="anomalies", period=NOV), rows, SIX_MONTHS).table == []    # ratio not met
-
-
-def test_anomaly_ratio_without_minimum_excess_is_not_flagged():
-    rows = history_rows(["10.00", "10.00", "10.00", "10.00", "10.00", "40.00"])          # 4x but only +30
-    assert calc.compute(form(type="anomalies", period=NOV), rows, SIX_MONTHS).table == []
+@pytest.mark.parametrize("history, latest, excess", [
+    ("100.00", "160.00", "60.00"),
+    ("100.00", "150.00", None),         # exactly 1.5x is not "more than" 1.5x
+    ("90.00", "140.00", "50.00"),       # 1.56x and exactly +50 meets "at least $50"
+    ("10.00", "40.00", None),           # 4x but only +30
+])
+def test_anomaly_needs_ratio_and_minimum_excess(history, latest, excess):
+    table = calc.compute(form(type="anomalies", period=NOV), history_rows([history] * 5 + [latest]), SIX_MONTHS).table
+    if excess is None:
+        assert table == []
+    else:
+        assert (table[0]["category"], table[0]["median"], table[0]["excess"]) == ("Dining", D(history), D(excess))
 
 
 def test_anomalies_need_three_months_of_history():
@@ -229,7 +214,7 @@ def test_direction_params_drive_the_search_query():
                                                 "except_sections": ["payments"]}
 
 
-# --- review round: blockers and majors -------------------------------------------------
+# --- review fixes ------------------------------------------------------------------------
 
 def test_trend_month_clipped_by_the_asked_range_is_partial_and_not_compared():
     periods = [(date(2026, 5, 1), date(2026, 7, 31))]
@@ -253,14 +238,6 @@ def test_trend_includes_a_month_with_rows_but_no_statement():
     rows = [row(1, date(2026, 9, 28), "-30.00")]          # dated before its statement started
     table = calc.compute(form(type="monthly_trend"), rows, PERIODS).table
     assert {"month": "Sep 2026", "amount": D("30.00"), "partial": True, "change": None} in table
-
-
-def test_anomaly_rule_at_its_exact_edges():
-    # Exactly 1.5x is not "more than" 1.5x; exactly +$50 meets "at least $50".
-    at_ratio = history_rows(["100.00"] * 5 + ["150.00"])
-    assert calc.compute(form(type="anomalies", period=NOV), at_ratio, SIX_MONTHS).table == []
-    at_excess = history_rows(["90.00"] * 5 + ["140.00"])                    # 1.56x and exactly +50
-    assert calc.compute(form(type="anomalies", period=NOV), at_excess, SIX_MONTHS).table[0]["excess"] == D("50.00")
 
 
 def test_compare_same_and_zero_rows_in_rankings():
