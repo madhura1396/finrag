@@ -20,8 +20,9 @@ Layout facts supplied by the user from a real Wells Fargo credit card statement 
 - **Period line.** `Statement Period MM/DD/YYYY to MM/DD/YYYY` is printed in the header of every numbered page.
 - **Purchases heading.** `Purchases, Balance Transfers & Other Charges`, with the comma.
 - **Section totals.** `TOTAL PAYMENTS FOR THIS PERIOD`, `TOTAL OTHER CREDITS FOR THIS PERIOD`, `TOTAL PURCHASES, BALANCE TRANSFERS & OTHER CHARGES FOR THIS PERIOD`, `TOTAL FEES CHARGED FOR THIS PERIOD`, `TOTAL INTEREST CHARGED FOR THIS PERIOD`.
+- **The table header is stacked** over three lines: `Card Trans Post Reference Number Description Credits Charges`, then `Ending Date Date`, then `in`. The profile matches the top line as `table.header` and lists the two lines below as `table.header_continuation`; the reader skips them only directly under the header, in that order, and matches their text exactly. Found by `check_profiles` on the first real statement (2026-11-11).
 - **A year-to-date trap.** A "Totals Year-to-Date" box prints `TOTAL FEES CHARGED IN <year>` and `TOTAL INTEREST CHARGED IN <year>`. These must not match a section total.
-- **Account Summary, in order.** `Previous Balance`, − `Payments`, − `Other Credits`, + `Cash Advances`, + `Purchases, Balance Transfers & Other Charges` (wraps over two lines), + `Fees Charged`, + `Interest Charged`, = `New Balance`.
+- **Account Summary, in order.** `Previous Balance`, − `Payments`, − `Other Credits`, + `Cash Advances`, + `Purchases, Balance Transfers & Other Charges` (wraps over two lines; the amount sits on the first line, `Other Charges` continues below it), + `Fees Charged`, + `Interest Charged`, = `New Balance`.
 - **The summary is two columns.** The right column (`Total Credit Limit`, `Cash Advance Limit`, `Total Available Credit`, `Available for Cash Advances`) shares the same rows.
 - **No Cash Advances section appeared,** so its table heading is unknown.
 - **Interest rows print no Trans Date and no Post Date.** Fee rows are unknown, since none appeared.

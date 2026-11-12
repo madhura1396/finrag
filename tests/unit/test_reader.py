@@ -218,3 +218,63 @@ def test_undated_fee_rows_get_the_closing_date(tmp_path):
     spec.rows.append(Txn("fees", None, "LATE FEE", D("-29.00")))
     data, truth = read(tmp_path, spec)
     assert rows_of(data) == truth and validate(data) == []
+
+
+def test_summary_label_wrapped_before_its_amount(tmp_path):
+    # The older layout: label continues onto the line that carries the amount.
+    data, truth = read(tmp_path, standard_spec(purchases_amount_first_line=False))
+    assert rows_of(data) == truth and validate(data) == []
+    assert data.summary["purchases"].value == section_total(standard_spec(), "purchases")
+
+
+# --- review round: stacked header and summary wrap -----------------------------------
+
+def test_a_one_line_header_still_reads(tmp_path):
+    # The profile's continuation lines are optional: absent, nothing is skipped.
+    data, truth = read(tmp_path, standard_spec(stacked_header=False))
+    assert rows_of(data) == truth and validate(data) == []
+
+
+def test_header_continuation_is_skipped_only_directly_under_the_header(tmp_path):
+    # The same words further down are not skipped: here they sit inside the
+    # purchases section and are rejected as a row without an amount.
+    path = tmp_path / "s.pdf"
+    make_statement(path, standard_spec())
+    doc = fitz.open(str(path))
+    page = doc[0]
+    inst = page.search_for("GROCER MART")[0]
+    page.insert_text((92, inst.y1 + 5), "Date", fontsize=8, fontname="helv")
+    page.insert_text((140, inst.y1 + 5), "Date", fontsize=8, fontname="helv")
+    doc.save(str(tmp_path / "s2.pdf"))
+    assert ("row_invalid", "purchases") in checks(read_statement(tmp_path / "s2.pdf", PROFILE))
+
+
+def _summary_lines(*rows):
+    """Lines for reader._summary: each row is (label words, amount or None)."""
+    from app.reader import Line, Word
+    lines = [Line(0, [Word(46, 0, 80, "Previous"), Word(82, 0, 110, "Balance"), Word(230, 0, 260, "$100.00"),
+                      Word(330, 0, 350, "Total"), Word(352, 0, 370, "Credit"), Word(372, 0, 390, "Limit")])]
+    for i, (label, amount) in enumerate(rows, start=1):
+        words, x = [], 46.0
+        for w in label.split():
+            words.append(Word(x, i * 12, x + 20, w)); x += 22
+        if amount:
+            words.append(Word(230, i * 12, 260, amount))
+        lines.append(Line(0, words))
+    return [lines]
+
+
+def test_summary_attach_needs_the_completing_words_on_the_very_next_line():
+    from app.reader import _summary
+    values, mismatches = _summary(_summary_lines(
+        ("Purchases, Balance Transfers &", "$5.00"), ("see note", None), ("Other Charges", None),
+        ("New Balance", "$105.00")), PROFILE)
+    assert "purchases" not in values
+    assert "unknown_summary_label" in {m.check for m in mismatches}
+
+
+def test_summary_unknown_label_with_a_non_completing_line_is_rejected():
+    from app.reader import _summary
+    values, mismatches = _summary(_summary_lines(
+        ("Bonus Points", "$1.00"), ("Other Charges", None), ("New Balance", "$101.00")), PROFILE)
+    assert "unknown_summary_label" in {m.check for m in mismatches}

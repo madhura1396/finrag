@@ -9,10 +9,14 @@ period:
   date_format: '%m/%d/%Y'
 
 table:
-  header: ['Card Ending in', 'Trans Date', 'Post Date', 'Reference Number', 'Description', 'Credits', 'Charges']
+  # The header is stacked over three lines. `header` is the top line, which names
+  # every column; `header_continuation` is the exact text of the lines under it,
+  # skipped only when they follow the header in this order.
+  header: ['Card', 'Trans', 'Post', 'Reference Number', 'Description', 'Credits', 'Charges']
+  header_continuation: ['Ending Date Date', 'in']
   columns:
-    trans_date: 'Trans Date'
-    post_date: 'Post Date'
+    trans_date: 'Trans'
+    post_date: 'Post'
     description: 'Description'
     credit: 'Credits'
     debit: 'Charges'

@@ -170,6 +170,8 @@ def _summary(pages: list[list[Line]], profile: Profile) -> tuple[dict[str, Summa
         values: dict[str, SummaryLine] = {}
         mismatches: list[Mismatch] = []
         carry: list[str] = []
+        unmatched: tuple[str, Decimal] | None = None   # last label with an amount that matched nothing
+        unknown = Mismatch("unknown_summary_label", None, "a profile summary label", "unmatched")
         for line in lines[first:last + 1]:
             left = _strip_signs([w for w in line.words if w.x1 < anchor_x])
             if not left:
@@ -177,15 +179,27 @@ def _summary(pages: list[list[Line]], profile: Profile) -> tuple[dict[str, Summa
             amount = _money(left[-1].text)
             label_words = [w.text for w in (left[:-1] if amount is not None else left)]
             if amount is None:
-                carry.extend(label_words)           # a label wrapped onto the next line
+                if unmatched is not None:           # the label wrapped after its amount: only the next line
+                    head, head_amount = unmatched
+                    unmatched = None
+                    spec = labels.get(_norm(head + " " + " ".join(label_words)))
+                    if spec is not None:
+                        values[spec.key] = SummaryLine(head_amount, spec.sign, spec.section)
+                        continue
+                    mismatches.append(unknown)
+                carry.extend(label_words)           # a label wrapped before its amount
                 continue
+            if unmatched is not None:
+                mismatches.append(unknown)
             label = _norm(" ".join(carry + label_words))
-            carry = []
+            carry, unmatched = [], None
             spec = labels.get(label)
             if spec is None:
-                mismatches.append(Mismatch("unknown_summary_label", None, "a profile summary label", "unmatched"))
+                unmatched = (label, amount)
                 continue
             values[spec.key] = SummaryLine(amount, spec.sign, spec.section)
+        if unmatched is not None:
+            mismatches.append(unknown)
         for spec in profile.summary_lines:
             if spec.key not in values:
                 mismatches.append(Mismatch("summary_incomplete", spec.section, "a summary line", "missing"))
@@ -249,15 +263,20 @@ def _table(pages: list[list[Line]], profile: Profile, start: date, end: date) ->
     last_y = last_page = None
     for lines in pages:
         columns = None                       # a page is outside the table until its header row
+        continuation: list[str] = []
         gaps = sorted(b.words[0].y0 - a.words[0].y0 for a, b in zip(lines, lines[1:]))
         gap = 1.5 * gaps[len(gaps) // 2] if gaps else 0       # a wrap sits about one line below its row
         for line in lines:
             header = _header(line, profile)
             if header is not None:
-                columns = header
+                columns, continuation = header, [_norm(c) for c in profile.header_continuation]
                 continue
             if columns is None:
                 continue
+            if continuation and _norm(line.text) == continuation[0]:
+                continuation.pop(0)               # a stacked header's next line, exactly as the profile prints it
+                continue
+            continuation = []                     # only directly under the header, in order
             text = _norm(line.text)
             # Labels are matched without money words, which can sit inside a long label.
             label_text = _norm(" ".join(w.text for w in line.words if _money(w.text) is None))
