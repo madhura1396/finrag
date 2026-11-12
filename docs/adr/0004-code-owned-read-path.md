@@ -359,7 +359,7 @@ A script, run by hand with Ollama up, not a unit test. It sends each eval questi
 - **A whole year** (`YYYY`) was added to the period forms, because users say "in 2026" and the model writes it that way.
 - **Table answers are never rewritten,** including their summary line. Only the sentence types (`total_spent`, `total_received`, `count`, `compare`, `search`) get the placeholder rewrite.
 - **History and comparison types fetch every row.** Their history reaches outside the asked period; this stays within the scale limit recorded under Testing.
-- **The transitional `transactions.category` text column is dropped** (ADR 0005). An existing database needs `migrations/0002_drop_transitional_category.sql`, run by the user.
+- **The transitional `transactions.category` text column is dropped** (ADR 0005). An existing database was migrated once by hand (the SQL file was later removed); a fresh one gets the current schema from `scripts/reset_db.py`.
 - **The search eval's cases moved out of the repo** to `~/.finrag/search_eval.yaml`, because they named real merchants. `evals/search_eval.example.yaml` shows the format with invented names.
 - **Eval baseline,** 79 synthetic questions, served Q4 llama3.2 through Ollama, temperature 0:
 

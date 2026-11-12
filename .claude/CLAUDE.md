@@ -10,7 +10,6 @@ I am also using this project to learn senior engineering, so every design choice
 - Trips removed as out of scope (2026-11-11).
 - Extraction design is decided in docs/adr/0002-profile-based-extraction.md. Follow it; do not reopen it without asking me.
 - Bank-specific knowledge lives only in profiles/*.yaml. Code in app/ must stay bank-agnostic.
-- app/extractor.py is legacy and will be deleted by the plan in docs/plans/extraction-rebuild.md.
 
 ## Hard constraints
 
@@ -46,8 +45,8 @@ Not architectural, so just do it inside the agreed task: naming, refactors insid
 
 ## Source of truth
 
-- The code is the source of truth. `README.md` and `decisions.md` are out of date in places and contradict the code and each other (for example, four descriptions of the embedding text; `app/embedder.py` is correct).
-- `decisions.md` is legacy. New decisions go in `docs/adr/`. Never quote `decisions.md` or the README as fact without checking the code.
+- The code is the source of truth. `README.md` is out of date in places; never quote it as fact without checking the code.
+- Decisions live in `docs/adr/`.
 
 ## Layout and dependency direction
 
@@ -56,7 +55,6 @@ app/            production code
   main.py           FastAPI endpoints; loopback-only middleware
   pipeline.py       write path orchestration
   statement.py      StatementData contract + validation (bank-agnostic, no DB)
-  extractor.py      legacy Wells Fargo parser; unused, deleted in PR3
   profile.py        strict loader for profiles/*.yaml (the only home of bank strings)
   reader.py         PDF -> StatementData by word positions, driven by the profile
   categorization.py label precedence, rules, memory, preview/apply, history, undo (ADR 0005; writes)
@@ -78,7 +76,6 @@ app/            production code
   reembed.py        re-embed stale rows
 docs/adr/       architecture decision records
 docs/plans/     implementation plans
-migrations/     historical SQL; the schema is now rebuilt by scripts/reset_db.py (ADR 0005)
 scripts/        reset_db.py (guarded schema reset); check_profiles.py (pass/fail on your real statements)
 profiles/       bank layout profiles, YAML
 experiments/    model-internals research, not part of the app
@@ -105,7 +102,7 @@ uvicorn app.main:app --reload                                      # binds 127.0
 python demo.py                                                      # needs the server running
 ```
 
-- Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `extractor.py`, `llm.py` and `read_config.py`.
+- Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `llm.py` and `read_config.py`.
 - Form eval: `python -m evals.read_path.run [--rewrite]` (Ollama up). Few-shot examples live in `query_router.TEACH_EXAMPLES`; the eval refuses any overlap with its questions.
 - Every database carries an environment marker (`db_environment`): `finrag` is `production`, `finrag_test` is `test`. Connections compare it with `FINRAG_ENV` (default `production`) and refuse on a mismatch or a missing marker.
 - The label endpoints (`/changes/*`, `/categories`, `/rules`, `/memory`, `/review`, `/enrichment/retry`, `/embeddings/refresh`) write real data with no authentication. Never expose the API beyond this machine without an authentication decision first.
@@ -115,7 +112,7 @@ python demo.py                                                      # needs the 
 
 - Unit tests: `pip install -r requirements-dev.txt`, then `python -m pytest` from the repo root. They live in `tests/unit/` and need no Ollama, Postgres or `.env` (`tests/conftest.py` disables `load_dotenv` and sets a dummy `DATABASE_URL`).
 - Integration tests (user-approved exception to the no-Postgres rule): `FINRAG_TEST_DATABASE_URL=<finrag_test URL> python -m pytest -m integration`. They live in `tests/integration/`, refuse any database not named `finrag_test`, connect with the environment guard (`FINRAG_ENV=test`), and roll back each test's transaction.
-- Manual scripts remain in `tests/` and are excluded from pytest: `python -m tests.test_extractor path/to/statement.pdf`. They need live Ollama and a real PDF.
+- A manual script remains in `tests/` and is excluded from pytest: `python -m tests.test_llm`. It needs live Ollama.
 - New tests must not call Ollama or Postgres unless I ask for an integration test. Mock the HTTP calls.
 - Never commit real statements as test fixtures. Use synthetic statements.
 
