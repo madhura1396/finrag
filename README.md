@@ -1,148 +1,154 @@
-# FinRAG — Personal Finance RAG System
+# FinRAG
 
-A fully local RAG system that parses Wells Fargo credit card statements and answers natural language questions about spending. No data leaves the machine.
+A personal finance assistant that runs entirely on one laptop. PDF credit card statements go in, every transaction is stored in Postgres with a category, a merchant name and an embedding, and plain-English questions come back with exact answers.
 
----
+- **In:** PDF statements. Today only the Wells Fargo credit card layout is supported (ADR 0002).
+- **Stored:** signed transactions in Postgres, each with a 384-dimension embedding (pgvector).
+- **Out:** answers to questions such as "How much did I spend on travel in March?", "Where did I spend the most last month?" or "Any charges that look like parking?".
 
-## What it does
+Both models run locally: llama3.2 through Ollama, and all-MiniLM-L6-v2 through sentence-transformers. No statement text, transaction or embedding leaves the machine.
 
-Upload a PDF statement → transactions are extracted, cleaned, and stored in PostgreSQL → ask questions in plain English → the system routes to SQL for exact calculations or vector search for exploratory queries → an LLM formats the answer using real numbers from the database.
-
-```
-$ python demo.py
-
-Q: How much did I spend on groceries in December 2025?
-  Answer : You spent $46.38 on groceries in December 2025.
-  Route  : SQL
-
-Q: Which merchant did I spend the most at?
-  Answer : You spent the most at eBay with a total of $1,278.02.
-  Route  : SQL
-
-Q: Any charges that look like online shopping?
-  Answer : Yes — $610.60 from eBay on 2025-12-25 and $32.66 from Shein.
-  Route  : SEMANTIC
-```
+The project is also a deliberate exercise in senior engineering. Every architectural choice is recorded in [`docs/adr/`](docs/adr/) with its options, trade-offs and consequences.
 
 ---
 
-## Architecture
+## Three rules the code enforces
 
-```
-PDF upload
-    │
-    ▼
-reader.py          — reads the statement by word positions from profiles/*.yaml; rejects it unless every total reconciles
-    │
-    ▼
-llm.py             — Ollama (llama3.2) batch enrichment: clean merchant names, assign categories
-    │
-    ▼
-embedder.py        — all-MiniLM-L6-v2 embeddings stored in pgvector
-    │
-    ▼
-PostgreSQL + pgvector
-    │
-    ▼
-query_router.py
-    ├── _classify()        — single-token LLM call routes to sql or semantic
-    ├── _generate_sql()    — chain-of-thought prompt → PostgreSQL SELECT
-    └── _semantic_search() — cosine similarity, reranked so best chunk is closest to question
-    │
-    ▼
-Answer formatted by LLM using exact numbers from DB
-```
+**1. Privacy: statement content never leaves the machine.**
+Ollama is reached only at `localhost`, and embeddings are computed in-process. The API refuses every non-loopback client with a 403. Real merchant text lives only in the database or under `~/.finrag/`, never in the repo.
 
-**Stack:** FastAPI · PostgreSQL · pgvector · Ollama (llama3.2) · sentence-transformers · SQLAlchemy
+**2. Money is `Decimal`, never float.**
+Amounts are stored as `Numeric(10, 2)`, parsed into `Decimal`, and checked against the PDF's own totals by exact equality. Every number on the read path is computed in `app/calculations.py`, and money leaves the API as strings.
+
+**3. Fail loudly: a parse failure never becomes a wrong number.**
+If a statement doesn't reconcile with its printed section totals and Account Summary, nothing is saved and the upload gets a 422 that lists every mismatch. When the model can't label a row, the row stays `pending`. When the model misreads a question, the question is refused. If Ollama is down, the API answers 503.
 
 ---
 
-## Key design decisions
+## How it works
 
-**Hybrid retrieval — SQL + semantic search**
-Aggregation questions ("how much did I spend") need SQL. Pattern questions ("find charges that look like subscriptions") need vector search. Choosing the wrong path either returns wrong numbers or no results. A classifier LLM call routes each question before retrieval.
+### Write path: upload a statement
 
-**Chain-of-thought SQL generation**
-The SQL prompt forces the model to reason through metric → table → filters → aggregation before writing the query. Each intermediate step writes decisions into context, making patterns like `ILIKE` and date truncation more likely to appear correctly in the final query.
+```
+PDF ──► reader.py + profiles/*.yaml   word positions (PyMuPDF), driven by a YAML profile
+    ──► statement.validate            two independent reconciliation checks; any mismatch → 422, nothing saved
+    ──► pipeline.py                   one transaction: insert statement + signed rows
+    ──► categorization.py             label by section > pin > rule > memory > model (llama3.2, temp 0, JSON schema)
+    ──► embedder.py (background)      all-MiniLM-L6-v2 embeddings into pgvector
+```
 
-**Recency bias in semantic retrieval**
-Retrieved chunks are reordered so the highest-relevance chunk sits immediately before the question in the prompt. LLMs pay more attention to context near the question — this is a one-line reorder with measurable accuracy impact.
+All bank-specific knowledge (headings, total patterns, column anchors, summary labels) lives in `profiles/*.yaml`, so the code in `app/` stays bank-agnostic.
 
-**Local-only**
-Bank statements contain sensitive personal financial data. All LLM inference runs via Ollama. Embeddings use a local sentence-transformers model. Nothing is sent to an external API.
+### Read path: ask a question
 
-Architecture decisions with reasoning are in [docs/adr/](docs/adr/).
+```
+question ──► question_form.py   llama3.2 fills a schema-constrained form; code resolves dates, merchants, defaults
+         ──► read_queries.py    one parameterised, date-filtered SELECT (plus vector search for "looks like")
+         ──► calculations.py    every number, in Decimal
+         ──► answers.py         code writes every fact; an "Understood as" line shows the interpretation
+```
+
+The model never sees the data and never writes SQL. An optional rewrite step can rearrange the fact tokens into a sentence, but a checker rejects any rewrite that adds digits or changes a fact (ADR 0004).
+
+### Label changes
+
+Categories are the user's own list. Every change to a rule, pin, category or remembered label is previewed, token-checked against a `data_version`, applied in one transaction, logged in SCD2 history, and can be undone (ADR 0005).
 
 ---
 
-## Experiments
+## Design principles
 
-The `experiments/` folder documents the model internals research that informed the FinRAG design decisions.
+| Principle | What it means | Trade-off |
+|---|---|---|
+| **Code owns every number** | No number the user sees comes from a model. Write-path numbers must reconcile with the PDF, and read-path numbers are computed in `Decimal`. | Only the 12 built question types are answered. Other questions are refused and logged locally. |
+| **Reject rather than guess** | Every ambiguous case refuses visibly: an unreconciled statement, an unknown category, an unmatched merchant, a misread question, a rule tie. | More refusals, but never an invented figure. |
+| **Profiles hold bank knowledge** | A new bank means a new YAML profile and a synthetic fixture, not a new parser. | No profile selection yet: exactly one profile is loaded. |
+| **The user owns labels** | The model may pick only from the user's categories or answer `none_fit`, and its answers are remembered per description. | Memory makes labels consistent, not necessarily correct, until the user corrects them. |
+| **Safety is checked at runtime** | Reconciliation, the "Understood as" line, preview tokens and the database environment marker all run on every request, not only in tests. | |
 
-### Attention & residual stream
-- **`attention_steps.py`** — step-by-step attention mechanism: Q·Kᵀ → scale → softmax → ·V, showing how attention weights distribute across tokens
-- **`inspect_attention.py`** — attention sink visualization: token 0 accumulates disproportionate attention weight across all heads (known property of transformer decoders)
-- **`residual_stream.py`** — how the residual stream accumulates meaning across 16 layers for a financial token like "grew"
-- **`residual_demo.py`** — numpy demo showing why residual connections prevent vanishing gradients
+---
 
-### FFN layers
-- **`ffn_steps.py`** / **`ffn_steps_layer15.py`** — feed-forward network step-by-step: gate · up projection → SiLU activation → down projection; comparing layer 0 (syntactic) vs layer 15 (semantic)
+## Tech stack
 
-### Token geometry
-- **`real_anisotropy.py`** — cosine similarity matrices across token pairs at 4 depth snapshots, showing how representations become more anisotropic (clustered) in deeper layers
-- **`temperature_visualization.py`** — how temperature scaling sharpens or flattens the softmax distribution; shows entropy collapse at T=0.1 and near-uniform distribution at T=2.0
+| Piece | Why |
+|---|---|
+| **FastAPI** + uvicorn | Typed requests, a thread pool for sync handlers, background tasks, a lifespan hook for startup checks. |
+| **Postgres + pgvector** | One store for both relational and vector data, so a similarity search can filter by date, sign, category and merchant in the same SQL. Also row locks and constraints. |
+| **SQLAlchemy** | Models, parameterised queries, and the connect hook that holds the environment guard. |
+| **Ollama llama3.2** | Local, free, JSON-schema-constrained output at temperature 0. |
+| **all-MiniLM-L6-v2** | Small (384 dimensions), fast on a CPU, local. |
+| **PyMuPDF** | Deterministic word boxes with coordinates, so the reader can tell columns apart. |
+| **YAML profiles** | Declarative, reviewable, versioned. The strict loader refuses unknown keys and YAML's implicit typing. |
+| **`Decimal`** | Exact cents and exact equality for reconciliation. |
 
-### Perplexity & domain adaptation
-- **`perplexity_analysis.py`** — token-level loss comparison between general English (perplexity 9.23) and financial text (perplexity 12.77). The model finds financial acronyms like EBITDA and SG&A harder to predict, explaining why domain-specific RAG retrieval matters.
+---
 
-### Quantization gap
-- **`quant_gap_eval.py`** — measures accuracy delta between bfloat16 HuggingFace weights and Q4_K_M Ollama weights on FinRAG classifier and financial continuation tasks. Classifier accuracy gap: 0 pp. Financial token continuation agreement: 25% — the quantized model substitutes generic tokens ("That", "It") for precise financial continuations ("quarter", "expenditures") on rare vocabulary.
+## Project layout
+
+```
+app/            production code (write path, read path, labels, models, DB guard)
+profiles/       bank layout profiles, YAML
+scripts/        reset_db.py (guarded schema reset), check_profiles.py (pass/fail on real statements)
+docs/adr/       architecture decision records
+docs/plans/     implementation plans
+evals/          read-path form eval (synthetic questions), search eval example
+tests/          unit/ (pytest, no Ollama or Postgres), integration/ (finrag_test only)
+experiments/    model-internals research (attention, FFN, quantisation gap); not part of the app
+demo.py         example API client
+```
 
 ---
 
 ## Running locally
 
-**Prerequisites:** PostgreSQL with pgvector extension, Ollama with llama3.2 pulled
+**Prerequisites:** Postgres with pgvector, Ollama running with `llama3.2` pulled, Python 3.
 
 ```bash
-# Install dependencies
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Configure environment
-cp .env.example .env
-# edit .env: set DATABASE_URL=postgresql://user:password@localhost:5432/finrag
+# Create a .env file containing DATABASE_URL=postgresql://user:password@localhost:5432/finrag
 
-# Start the server
-uvicorn app.main:app --reload
+# Fresh database: create the tables, mark it as production, and seed it
+python -m scripts.reset_db --env production --yes --confirm-name finrag
 
-# Upload a statement
-curl -X POST http://localhost:8000/upload \
-  -F "file=@your_statement.pdf"
-
-# Run the demo
-python demo.py
+uvicorn app.main:app --reload     # binds 127.0.0.1; non-loopback clients get 403
+python demo.py                    # needs the server running
 ```
 
-**API endpoints:**
-| Method | Path | Description |
-|--------|------|-------------|
+Every database carries an environment marker (`finrag` is `production`, `finrag_test` is `test`). A connection is refused if the marker is missing or doesn't match `FINRAG_ENV`.
+
+### API
+
+| Method | Path | Purpose |
+|---|---|---|
 | POST | `/upload` | Upload a PDF statement |
 | POST | `/query` | Ask a question in plain English |
-| GET | `/statements` | List uploaded statements |
-| GET | `/statements/{id}/transactions` | List transactions for a statement |
+| GET | `/statements` | List statements |
+| GET | `/statements/{id}/transactions` | List a statement's transactions |
+| GET | `/categories`, `/rules`, `/memory`, `/review`, `/changes` | Inspect labels, rules, memory, review items and the change log |
+| POST | `/changes/preview`, `/changes/apply` | Preview, then apply a label change (including undo) |
+| POST | `/enrichment/retry`, `/embeddings/refresh` | Re-run labelling or embedding |
+
+The label endpoints write real data with no authentication. Loopback-only access is the whole defence, so never expose this API beyond your own machine.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest                                              # unit tests: no Ollama, Postgres or .env
+FINRAG_TEST_DATABASE_URL=<finrag_test URL> python -m pytest -m integration
+python -m evals.read_path.run                                 # form eval; needs Ollama
+```
 
 ---
 
-## Eval results
+## Known limits
 
-Semantic search accuracy on 7 query types against real transaction data:
+- Only one layout has been verified so far: the Wells Fargo credit card.
+- llama3.2 often misreads questions: whole-form accuracy is 37.8% on the synthetic eval. The "Understood as" line makes every misread visible, and a misread never produces an invented number.
+- A statement's identity is its billing period alone, so a second card with the same billing dates would collide.
+- There is no authentication; the API is loopback-only.
 
-| Embedding format | Accuracy |
-|---|---|
-| Category only | 67% |
-| Merchant + category | 80% |
-| Merchant + raw description + category | 73%* |
-
-*Drop from 80% is due to LLM merchant name cleaning removing terms like "Park Meters" that were useful for matching. Raw description restores this signal but introduces noise from store numbers and transaction codes.
+See [`docs/findings-and-recommendations.md`](docs/findings-and-recommendations.md) for the full list.
