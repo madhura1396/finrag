@@ -32,7 +32,7 @@ Q: Any charges that look like online shopping?
 PDF upload
     │
     ▼
-extractor.py       — PyMuPDF text extraction, state machine parser
+reader.py          — reads the statement by word positions from profiles/*.yaml; rejects it unless every total reconciles
     │
     ▼
 llm.py             — Ollama (llama3.2) batch enrichment: clean merchant names, assign categories
@@ -71,7 +71,7 @@ Retrieved chunks are reordered so the highest-relevance chunk sits immediately b
 **Local-only**
 Bank statements contain sensitive personal financial data. All LLM inference runs via Ollama. Embeddings use a local sentence-transformers model. Nothing is sent to an external API.
 
-Full architecture decisions with reasoning at [decisions.md](decisions.md).
+Architecture decisions with reasoning are in [docs/adr/](docs/adr/).
 
 ---
 

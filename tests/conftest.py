@@ -7,10 +7,9 @@ import os
 
 import dotenv
 
-# Manual scripts, not pytest tests: test_extractor.py's functions take a
-# `filepath` argument and need a real PDF, and test_llm.py calls live Ollama.
+# Manual script, not a pytest test: test_llm.py calls live Ollama.
 # Listing them here keeps them out of `pytest tests/` as well as bare `pytest`.
-collect_ignore = ["test_extractor.py", "test_llm.py"]
+collect_ignore = ["test_llm.py"]
 
 # app/models.py calls load_dotenv() and create_engine(DATABASE_URL) at import.
 # Neutralise load_dotenv before that import so tests never read .env, and give
