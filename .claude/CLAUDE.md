@@ -1,6 +1,6 @@
 # FinRAG
 
-Personal finance assistant I use for real. Bank statements in, transactions to Postgres + pgvector, questions in plain English answered by routing to SQL or vector search. Ollama (llama3.2) and all-MiniLM-L6-v2 run locally.
+Personal finance assistant I use for real. PDF bank statements in, reconciled transactions to Postgres + pgvector, plain-English questions answered by a model-filled form, with every number computed by code (ADR 0004). Ollama (llama3.2) and all-MiniLM-L6-v2 run locally.
 
 I am also using this project to learn senior engineering, so every design choice must be explained and defensible.
 
@@ -8,14 +8,10 @@ I am also using this project to learn senior engineering, so every design choice
 
 - Today: Wells Fargo credit card only (ADR 0002, Decision 1). Target: Wells Fargo, Chase, Discover, Fidelity. PDF statements only.
 - Trips removed as out of scope (2026-11-11).
-- Extraction design is decided in docs/adr/0002-profile-based-extraction.md. Follow it; do not reopen it without asking me.
-- Bank-specific knowledge lives only in profiles/*.yaml. Code in app/ must stay bank-agnostic.
 
 ## Hard constraints
 
-- Privacy: statement content never leaves this machine. Any option that would send statement text, transactions or embeddings to an external API must say so as its first con.
-- Money is `Decimal` / `Numeric`, never float.
-- A parse failure must never silently become a wrong number. Fail loudly: reject the statement and save nothing (ADR 0002).
+Privacy, `Decimal` money and fail-loudly are in `.claude/rules/` (`privacy.md`, `money-decimal.md`, `fail-loudly.md`). They always apply, everywhere in the repo, including `experiments/`.
 
 ## Code ownership
 
@@ -32,89 +28,29 @@ An architectural decision is any of:
 - the concurrency, transaction, error handling or security model
 - anything expensive to reverse
 
-Before making one:
-1. State the decision in one sentence and the requirement that forces it.
-2. Give 2 to 4 real options. Include "keep what we have" when it applies.
-3. For each option: how it works, pros, cons, cost (complexity, latency, money, privacy), and what breaks first at scale, on which axis, at roughly what number.
-4. Recommend one, and name the condition that would change your recommendation.
-5. Stop and wait for my choice. Write no code for it until I choose.
-6. After I choose, write `docs/adr/NNNN-short-title.md` with: Status, Date, Context, Options considered, Decision, Consequences.
+Before making one, follow the `write-adr` skill: options, recommendation, then stop and wait for my choice. Write no code for it until I choose.
 
 Not architectural, so just do it inside the agreed task: naming, refactors inside one function, formatting, test cases for behaviour we already agreed.
 
-
 ## Source of truth
 
-- The code is the source of truth. `README.md` is out of date in places; never quote it as fact without checking the code.
+- The code is the source of truth. `README.md` may lag; never quote it as fact without checking the code.
 - Decisions live in `docs/adr/`.
 
-## Layout and dependency direction
+## Layout
 
 ```
 app/            production code
-  main.py           FastAPI endpoints; loopback-only middleware
-  pipeline.py       write path orchestration
-  statement.py      StatementData contract + validation (bank-agnostic, no DB)
-  profile.py        strict loader for profiles/*.yaml (the only home of bank strings)
-  reader.py         PDF -> StatementData by word positions, driven by the profile
-  categorization.py label precedence, rules, memory, preview/apply, history, undo (ADR 0005; writes)
-  category_store.py current category names, normaliser, description keys, section/reserved names (read only)
-  db_setup.py       create_tables(engine, environment), seed(session), category seed data
-  db_guard.py       environment-marker guard on every connection
-  llm.py            Ollama labelling: temperature 0, schema-constrained, validated
-  embedding_text.py embedded text + stale check (no heavy imports)
-  embedder.py       sentence-transformers embeddings
-  query_router.py   read path orchestration: form -> rows -> numbers -> answer (ADR 0004)
-  question_form.py  question -> validated form; dates and merchants resolved by code
-  read_queries.py   the read path's five SQL queries (thin; date-filtered)
-  calculations.py   every read-path number, pure Python over Decimal
-  answers.py        exact answers, the "Understood as" line, the checked placeholder rewrite
-  read_config.py    read-path thresholds, timeouts, glue-word list, refused-log path, data types
-                    (Range, Form, Refusal); no I/O or DB imports
-  models.py         SQLAlchemy models, engine (guarded), session factory (new_session, get_session)
-  eval_search.py    search eval; cases from ~/.finrag/search_eval.yaml (outside the repo)
-  reembed.py        re-embed stale rows
-docs/adr/       architecture decision records
-docs/plans/     implementation plans
-scripts/        reset_db.py (guarded schema reset); check_profiles.py (pass/fail on your real statements)
 profiles/       bank layout profiles, YAML
-experiments/    model-internals research, not part of the app
+scripts/        reset_db.py (guarded schema reset); check_profiles.py (pass/fail on your real statements)
 evals/          read_path/ form eval (synthetic questions; needs Ollama); search_eval.example.yaml
 tests/          unit/ = pytest suite; integration/ = finrag_test suite; top-level test_*.py = manual scripts
+experiments/    model-internals research, not part of the app
+docs/adr/       architecture decision records
+docs/plans/     implementation plans
 ```
 
-- `app/` must never import from `experiments/` or `tests/`.
-- Write path: `main.py` -> `pipeline.py` -> `profile.py`, `reader.py`, `statement.py`, `categorization.py` -> `category_store.py`, `llm.py`, `embedding_text.py`, `embedder.py` -> `models.py`. `statement.py` imports nothing from `app`. The read path never imports `categorization.py`.
-- Setup: `scripts/reset_db.py` -> `db_setup.py` -> `models.py`. `models.py` imports only `db_guard.py`.
-- Read path: `main.py` -> `query_router.py` -> `question_form.py`, `read_queries.py`, `calculations.py`, `answers.py`, `embedder.py`, `embedding_text.py`, `category_store.py`, `read_config.py` -> `models.py`. The read path never imports `categorization.py` or `llm.py`.
-
-## Running locally
-
-Prereqs: Postgres with pgvector, Ollama running with `llama3.2` pulled, Python venv at `.venv`.
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-# .env needs DATABASE_URL=postgresql://user:password@localhost:5432/finrag
-python -m scripts.reset_db --env production --yes --confirm-name finrag   # fresh database: create, mark production, seed
-                                                                   # holds data or marked production: add --allow-production (destroys it)
-uvicorn app.main:app --reload                                      # binds 127.0.0.1; the API refuses non-loopback clients
-python demo.py                                                      # needs the server running
-```
-
-- Ollama URL `http://localhost:11434` and model `llama3.2` are hardcoded in `llm.py` and `read_config.py`.
-- Form eval: `python -m evals.read_path.run [--rewrite]` (Ollama up). Few-shot examples live in `query_router.TEACH_EXAMPLES`; the eval refuses any overlap with its questions.
-- Every database carries an environment marker (`db_environment`): `finrag` is `production`, `finrag_test` is `test`. Connections compare it with `FINRAG_ENV` (default `production`) and refuse on a mismatch or a missing marker.
-- The label endpoints (`/changes/*`, `/categories`, `/rules`, `/memory`, `/review`, `/enrichment/retry`, `/embeddings/refresh`) write real data with no authentication. Never expose the API beyond this machine without an authentication decision first.
-- `experiments/` needs torch, transformers, matplotlib, seaborn and llama_cpp, which are not in `requirements.txt`.
-
-## Tests
-
-- Unit tests: `pip install -r requirements-dev.txt`, then `python -m pytest` from the repo root. They live in `tests/unit/` and need no Ollama, Postgres or `.env` (`tests/conftest.py` disables `load_dotenv` and sets a dummy `DATABASE_URL`).
-- Integration tests (user-approved exception to the no-Postgres rule): `FINRAG_TEST_DATABASE_URL=<finrag_test URL> python -m pytest -m integration`. They live in `tests/integration/`, refuse any database not named `finrag_test`, connect with the environment guard (`FINRAG_ENV=test`), and roll back each test's transaction.
-- A manual script remains in `tests/` and is excluded from pytest: `python -m tests.test_llm`. It needs live Ollama.
-- New tests must not call Ollama or Postgres unless I ask for an integration test. Mock the HTTP calls.
-- Never commit real statements as test fixtures. Use synthetic statements.
+Folder rules load when you work in that folder: `app/`, `profiles/`, `scripts/`, `evals/`, `tests/`, `experiments/` and `docs/adr/` each have a `CLAUDE.md`. File-level rules for `app/` live in `.claude/rules/`: `write-path.md`, `read-path.md`, `database.md`.
 
 ## Git
 
