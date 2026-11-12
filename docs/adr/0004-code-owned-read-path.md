@@ -391,3 +391,8 @@ A script, run by hand with Ollama up, not a unit test. It sends each eval questi
   - the rewrite prompt names the question type, tokens must stay in order, and the glue may contain only plain ASCII words and punctuation;
   - the closed list adds or, instead, minus, plus, until, apart, lacking, supposedly, excluded, included;
   - `app/read_types.py` holds the plain data types, with no I/O imports.
+- **Demo fixes (fix/read-path-demo, 2026-11-11):**
+  - Spelled-out nulls (`category_store.PLACEHOLDER_WORDS`: null, none, n/a, nil, undefined, "") are absent in every form field but `type`, and reserved as category names. An unfilled period template (`--MM`) stays a bad period.
+  - `search_text` on any type but `search` is not understood (a type misread); it is never converted to a search.
+  - A schema enum of current category names was tried and dropped: the model then put merchants and trips into a real category (eval: Megastore -> Groceries, Lakeside trip -> Travel & Transport), a silently wrong scope instead of the loud fallback or refusal below.
+  - An unknown category is tried as a merchant only if it equals whole words of a merchant name and is not within 0.75 similarity (`CATEGORY_NEAR`) of a category name or word; otherwise the category refusal stands.

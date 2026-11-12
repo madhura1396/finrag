@@ -14,6 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.models import CategoryId, CategoryVersion
 
+# "No value" spelled out: absent in a form field, so reserved as category names.
+PLACEHOLDER_WORDS = frozenset({"", "null", "none", "n/a", "nil", "undefined"})
+
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACES = re.compile(r"\s+")
 _DIGITS = re.compile(r"\d+")

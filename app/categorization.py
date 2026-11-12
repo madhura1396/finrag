@@ -341,7 +341,7 @@ def _check_name(session: Session, name, *, ignore_category_id=None) -> str:
     name = " ".join(name.split())
     if len(name) > MAX_NAME_LENGTH:
         raise ChangeRejected(f"category name is longer than {MAX_NAME_LENGTH} characters")
-    if name.lower() in RESERVED_NAMES:
+    if name.lower() in RESERVED_NAMES or name.lower() in category_store.PLACEHOLDER_WORDS:
         raise ChangeRejected(f"'{name}' is reserved")
     for c in category_store.current_categories(session):
         if not c.archived and c.name.lower() == name.lower() and c.category_id != ignore_category_id:

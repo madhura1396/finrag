@@ -17,7 +17,7 @@ from datetime import date, timedelta
 import httpx
 
 from app import read_settings as rs
-from app.category_store import normalise
+from app.category_store import PLACEHOLDER_WORDS, normalise
 from app.read_types import ALL, Form, Range, Refusal, Trip, month_range  # noqa: F401  (re-exported)
 
 TYPES = (
@@ -100,6 +100,11 @@ period: the time asked about. period_2: only when the question names a second pe
 """
 
 
+def _whole_words_of(text: str, name: str) -> bool:
+    needle = normalise(text)
+    return bool(needle) and f" {needle} " in f" {normalise(name)} "
+
+
 def build_prompt(question: str, examples: list[dict]) -> str:
     shots = "\n".join(f"Q: {e['question']}\nA: {json.dumps(e['form'])}" for e in examples)
     return f"{INSTRUCTIONS}\nExamples:\n{shots}\n\nQ: {question}\nA:"
@@ -112,7 +117,9 @@ def parse_raw(data) -> RawForm:
     values = {}
     for name in RawForm.__dataclass_fields__:
         value = data.get(name)
-        if value == "":
+        # A spelled-out null ("null", "n/a") is absent. An unfilled period template
+        # ("--MM") is not: it stays a bad period.
+        if name != "type" and isinstance(value, str) and value.strip().lower() in PLACEHOLDER_WORDS:
             value = None
         values[name] = value
     checks = {
@@ -372,7 +379,15 @@ def _applied_only(raw: RawForm) -> RawForm:
                            if name != "type" and name not in keep})
 
 
+def _near_category(text: str, categories: list[str]) -> bool:
+    words = [w for c in categories for w in [normalise(c), *normalise(c).split()]]
+    return bool(difflib.get_close_matches(normalise(text), words, n=1, cutoff=rs.CATEGORY_NEAR))
+
+
 def resolve(raw: RawForm, ctx: DataContext) -> Form | Refusal:
+    if raw.search_text is not None and raw.type != "search":
+        # The model misread the type; refuse as not understood, never guess search.
+        raise NotUnderstood(f"search words on type {raw.type}")
     if raw.type == "unsupported":
         return Refusal("unsupported", "this kind of question is not supported yet", {"supported": list(TYPES)})
     raw = _applied_only(raw)
@@ -393,9 +408,17 @@ def resolve(raw: RawForm, ctx: DataContext) -> Form | Refusal:
     if raw.category is not None:
         by_lower = {c.lower(): c for c in ctx.categories}
         name = by_lower.get(raw.category.strip().lower())
-        if name is None:
-            return Refusal("data", f"no category named '{raw.category}'", {"categories": sorted(ctx.categories)})
-        form = replace(form, category=name)
+        if name is not None:
+            form = replace(form, category=name)
+        else:
+            # "spend on <shop>": try whole words of a merchant name, unless it is
+            # near a category name ("grocery" vs "Groceries").
+            matched = []
+            if raw.merchant is None and not _near_category(raw.category, ctx.categories):
+                matched = sorted(m for m in ctx.merchants if _whole_words_of(raw.category, m))
+            if not matched:
+                return Refusal("data", f"no category named '{raw.category}'", {"categories": sorted(ctx.categories)})
+            form = replace(form, merchant_text=raw.category, merchants=tuple(matched))
 
     if raw.merchant is not None:
         matched, closest = match_merchants(raw.merchant, ctx.merchants)

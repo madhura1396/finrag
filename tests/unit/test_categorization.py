@@ -305,3 +305,10 @@ def test_the_app_engine_has_the_guard_installed():
     from sqlalchemy import event
     from app import db_guard, models
     assert event.contains(models.engine, "connect", db_guard._check)
+
+
+
+@pytest.mark.parametrize("name", ["null", " N/A "])
+def test_placeholder_words_are_reserved_category_names(name):
+    with pytest.raises(cz.ChangeRejected, match="reserved"):
+        cz._check_name(MagicMock(), name)
