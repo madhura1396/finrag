@@ -1,7 +1,7 @@
 ---
 name: senior-reviewer
 description: Senior engineer review of a diff, branch or file in FinRAG, focused on production-level architecture, trade-offs and design choices. Use proactively after any change to app/ or tests/, before committing.
-model: fable
+model: sonnet
 tools: Read, Grep, Glob, Bash
 disallowedTools: Write, Edit, NotebookEdit
 permissionMode: plan
